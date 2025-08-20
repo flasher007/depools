@@ -1,0 +1,50 @@
+# Working configuration file for AMM Arbitrage CLI
+# This file demonstrates the configuration format
+# Using Helius RPC for enhanced performance and reliability
+
+[rpc]
+url = "https://api.mainnet-beta.solana.com"
+
+[wallet]
+keypair = "test-keypair.json"
+
+[tokens]
+# Base token (SOL)
+base_token = { mint = "So11111111111111111111111111111111111111112", symbol = "SOL", decimals = 9 }
+# Quote token (USDC)  
+quote_token = { mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol = "USDC", decimals = 6 }
+
+[pools]
+# Pool addresses for the two AMM pools to arbitrage between
+# SOL-USDC on Raydium V4 (Legacy AMM)
+pool_a = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"
+# SOL-USDC on Orca Whirlpool (рабочий пул!)
+pool_b = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"
+
+[trade]
+# Amount to trade in base token (in lamports for SOL)
+amount_in = 1000000.0
+
+# Minimum spread threshold in basis points (1% = 100 bps)
+spread_threshold_bps = 50
+
+# Slippage tolerance in basis points (1% = 100 bps)
+slippage_bps = 100
+
+# Priority fee in microlamports
+priority_fee_microlamports = 1000
+
+# Whether to only simulate transactions
+simulate_only = true
+
+[programs]
+# Program IDs for different AMM types
+raydium_v4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+orca_whirlpool = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+spl_token = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+[stream]
+# Backend for real-time data (currently only "yellowstone" supported)
+backend = "yellowstone"
+endpoint = "grpc.yellowstone.finance:443"
+x_token = "b5939e95-d595-4e01-9401-da85b5c720af"
