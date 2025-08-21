@@ -1,23 +1,56 @@
 use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
 
+/// Format pool address for display
 pub fn format_pool_address(address: &Pubkey) -> String {
-    format!("{}...{}", &address.to_string()[..8], &address.to_string()[address.to_string().len()-8..])
+    format!("{}", address)
 }
 
-pub fn validate_pool_address(address: &str) -> Result<Pubkey> {
+/// Validate pool address string
+pub fn validate_pool_address(address: &str) -> anyhow::Result<Pubkey> {
     address.parse().map_err(|e| anyhow::anyhow!("Invalid pool address: {}", e))
 }
 
+/// Calculate price impact for a swap
 pub fn calculate_price_impact(amount_in: u64, reserve_in: u64, reserve_out: u64) -> f64 {
-    if reserve_in == 0 || reserve_out == 0 {
-        return 0.0;
+    let amount_in_f = amount_in as f64;
+    let reserve_in_f = reserve_in as f64;
+    (amount_in_f / (reserve_in_f + amount_in_f)) * 100.0
+}
+
+/// Convert lamports to SOL (9 decimals)
+pub fn lamports_to_sol(lamports: u64) -> f64 {
+    lamports as f64 / 1_000_000_000.0
+}
+
+/// Convert lamports to USDC (6 decimals)
+pub fn lamports_to_usdc(lamports: u64) -> f64 {
+    lamports as f64 / 1_000_000.0
+}
+
+/// Format SOL amount with 6 decimal places
+pub fn format_sol(amount: f64) -> String {
+    format!("{:.6} SOL", amount)
+}
+
+/// Format USDC amount with 3 decimal places
+pub fn format_usdc(amount: f64) -> String {
+    format!("{:.3} USDC", amount)
+}
+
+/// Format large numbers with commas for readability
+pub fn format_large_number(num: u64) -> String {
+    let num_str = num.to_string();
+    let mut result = String::new();
+    let mut count = 0;
+    
+    for (i, ch) in num_str.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+        count += 1;
     }
     
-    let k = reserve_in as f64 * reserve_out as f64;
-    let new_reserve_in = reserve_in as f64 + amount_in as f64;
-    let new_reserve_out = k / new_reserve_in;
-    let price_impact = (reserve_out as f64 - new_reserve_out) / reserve_out as f64;
-    
-    price_impact * 10000.0 // Convert to basis points
+    result.chars().rev().collect()
 }

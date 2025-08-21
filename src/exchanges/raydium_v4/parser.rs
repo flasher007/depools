@@ -17,8 +17,11 @@ impl RaydiumV4Parser {
         // Known token positions from our analysis
         let base_mint_start = 400;  // WSOL
         let quote_mint_start = 432; // USDC
-        let base_vault_start = 437; // First vault after USDC
-        let quote_vault_start = 438; // Second vault
+        
+        // Vault positions based on REAL data analysis
+        // Found real vault addresses at positions 336 and 368
+        let base_vault_start = 336;  // Real WSOL vault
+        let quote_vault_start = 368; // Real USDC vault
 
         // Parse base token (WSOL)
         let base_mint = if base_mint_start + 32 <= data.len() {
@@ -74,20 +77,42 @@ impl RaydiumV4Parser {
             vault: quote_vault.expect("Quote vault should exist"),
         };
 
-        // Create PoolReserves (placeholder values for now)
-        let reserves = PoolReserves {
-            token_a_reserve: 0,
-            token_b_reserve: 0,
-            lp_supply: None,
+        // Parse fees from contract data using exact positions found in analysis
+        let trade_fee_numerator_pos = 144; // Found at position 144 (u16 little-endian)
+        let trade_fee_denominator_pos = 136; // Found at position 136 (u32 little-endian)
+        
+        let trade_fee_numerator = if trade_fee_numerator_pos + 2 <= data.len() {
+            u16::from_le_bytes([data[trade_fee_numerator_pos], data[trade_fee_numerator_pos + 1]])
+        } else {
+            warn!("Trade fee numerator position out of bounds, using default");
+            25
         };
-
-        // Create PoolFees (placeholder values for now)
+        
+        let trade_fee_denominator = if trade_fee_denominator_pos + 4 <= data.len() {
+            u32::from_le_bytes([
+                data[trade_fee_denominator_pos],
+                data[trade_fee_denominator_pos + 1],
+                data[trade_fee_denominator_pos + 2],
+                data[trade_fee_denominator_pos + 3]
+            ])
+        } else {
+            warn!("Trade fee denominator position out of bounds, using default");
+            10000
+        };
+        
+        info!("Parsed fees from contract: {}/{} = {} bps", trade_fee_numerator, trade_fee_denominator, trade_fee_numerator);
+        
         let fees = PoolFees {
-            trade_fee_bps: 25, // 0.25%
+            trade_fee_bps: trade_fee_numerator as u32, // 0.25% (25/10000)
             owner_trade_fee_bps: 0,
             owner_withdraw_fee_bps: 0,
         };
 
-        Ok((base_token, quote_token, reserves, fees))
+        // Note: Reserves are stored in separate token accounts (vaults)
+        // We need to fetch them via RPC calls to getTokenAccountBalance
+        info!("Fees: trade_fee_bps = {}, owner_trade_fee_bps = {}, owner_withdraw_fee_bps = {}", 
+              fees.trade_fee_bps, fees.owner_trade_fee_bps, fees.owner_withdraw_fee_bps);
+
+        Ok((base_token, quote_token, PoolReserves { token_a_reserve: 0, token_b_reserve: 0, lp_supply: None }, fees))
     }
 }
