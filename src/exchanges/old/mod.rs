@@ -2,7 +2,7 @@ pub mod raydium_v4;
 pub mod orca_whirlpool;
 pub mod types;
 pub mod utils;
-pub mod common;
+pub mod parsers;
 
 use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
