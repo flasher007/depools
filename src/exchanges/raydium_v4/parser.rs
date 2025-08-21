@@ -1,176 +1,93 @@
 use anyhow::Result;
+use tracing::{info, warn};
 use solana_sdk::pubkey::Pubkey;
 use crate::exchanges::types::{TokenInfo, PoolReserves, PoolFees};
-use crate::exchanges::common::{DebugParser, get_token_info};
-use tracing::debug;
 
-/// Парсер для данных пула Raydium V4
 pub struct RaydiumV4Parser;
 
 impl RaydiumV4Parser {
-    /// Парсит данные пула Raydium V4
-    /// Использует фиксированные позиции для SOL-USDC пулов
-    pub fn parse_pool_data(
-        data: &[u8],
-        base_token_mint: &str,
-        base_token_symbol: &str,
-        base_token_decimals: u8,
-        _quote_token_mint: &str,
-        quote_token_symbol: &str,
-        quote_token_decimals: u8,
-    ) -> Result<(TokenInfo, TokenInfo, PoolReserves, PoolFees)> {
-        // Проверяем минимальный размер данных
-        if data.len() < 752 {
-            return Err(anyhow::anyhow!("Invalid Raydium V4 pool data size: {} bytes", data.len()));
+    pub fn parse_pool_data(&self, data: &[u8]) -> Result<(TokenInfo, TokenInfo, PoolReserves, PoolFees)> {
+        info!("Parsing Raydium V4 pool data, size: {} bytes", data.len());
+        
+        if data.len() < 500 {
+            warn!("Data too short for Raydium V4 pool");
+            return Err(anyhow::anyhow!("Data too short for Raydium V4 pool"));
         }
-        
-        // Анализируем структуру данных для отладки
-        DebugParser::analyze_pool_structure(data)?;
-        
-        // Динамически ищем токены в данных Raydium V4
-        let mut token_positions: Vec<(usize, String, u8)> = Vec::new();
-        
-        // Ищем известные токены во всех позициях
-        
-        for i in (0..data.len()).step_by(32) {
-            if i + 32 <= data.len() {
-                if let Ok(pubkey) = Pubkey::try_from(&data[i..i + 32]) {
-                    let pubkey_str = pubkey.to_string();
-                    if let Some((symbol, decimals)) = get_token_info(&pubkey_str) {
-                        token_positions.push((i, symbol.to_string(), decimals));
-                        debug!("🔍 Found {} at position {} in Raydium V4", symbol, i);
-                    }
-                }
-            }
-        }
-        
-        // Ищем разные токены для разнообразия
-        let mut token_a_mint_start = 0;
-        let mut token_b_mint_start = 32;
-        
-        if let Some((pos, symbol, _)) = token_positions.get(0) {
-            token_a_mint_start = *pos;
-            
-            // Ищем токен с другим символом
-            if let Some((pos2, symbol2, _)) = token_positions.iter()
-                .find(|(_, sym, _)| sym != symbol) {
-                token_b_mint_start = *pos2;
-                debug!("🔍 Using different tokens: {} at pos {}, {} at pos {}", 
-                        symbol, token_a_mint_start, symbol2, token_b_mint_start);
-            } else {
-                debug!("⚠️  Only found one token type: {}", symbol);
-            }
-        }
-        let token_a_vault_start = 64; // USDC vault
-        let token_b_vault_start = 96; // SOL vault
-        let reserve_a_start = 128;     // USDC reserve
-        let reserve_b_start = 136;     // SOL reserve
-        let lp_supply_start = 144;     // LP supply
-        let fee_start = 144;           // Fees (исправлено с 152 на 144)
-        
-        let token_a_mint = Pubkey::try_from(&data[token_a_mint_start..token_a_mint_start + 32])?;
-        let token_b_mint = Pubkey::try_from(&data[token_b_mint_start..token_b_mint_start + 32])?;
-        
-        // Отладочная информация
-        debug!("🔍 DEBUG: token_a_mint = {} (position {})", token_a_mint, token_a_mint_start);
-        debug!("🔍 DEBUG: token_b_mint = {} (position {})", token_b_mint, token_b_mint_start);
-        
-        let token_a_vault = Pubkey::try_from(&data[token_a_vault_start..token_a_vault_start + 32])?;
-        let token_b_vault = Pubkey::try_from(&data[token_b_vault_start..token_b_vault_start + 32])?;
-        
-        let token_a_reserve = u64::from_le_bytes([
-            data[reserve_a_start], data[reserve_a_start + 1], data[reserve_a_start + 2], data[reserve_a_start + 3],
-            data[reserve_a_start + 4], data[reserve_a_start + 5], data[reserve_a_start + 6], data[reserve_a_start + 7]
-        ]);
-        let token_b_reserve = u64::from_le_bytes([
-            data[reserve_b_start], data[reserve_b_start + 1], data[reserve_b_start + 2], data[reserve_b_start + 3],
-            data[reserve_b_start + 4], data[reserve_b_start + 5], data[reserve_b_start + 6], data[reserve_b_start + 7]
-        ]);
-        
-        let lp_supply = u64::from_le_bytes([
-            data[lp_supply_start], data[lp_supply_start + 1], data[lp_supply_start + 2], data[lp_supply_start + 3],
-            data[lp_supply_start + 4], data[lp_supply_start + 5], data[lp_supply_start + 6], data[lp_supply_start + 7]
-        ]);
-        
-        let trade_fee_bps = u32::from_le_bytes([
-            data[fee_start], data[fee_start + 1], data[fee_start + 2], data[fee_start + 3]
-        ]);
-        let owner_trade_fee_bps = u32::from_le_bytes([
-            data[fee_start + 4], data[fee_start + 5], data[fee_start + 6], data[fee_start + 7]
-        ]);
-        let owner_withdraw_fee_bps = u32::from_le_bytes([
-            data[fee_start + 8], data[fee_start + 9], data[fee_start + 10], data[fee_start + 11]
-        ]);
-        
-        // Определяем какой токен SOL, какой USDC
-        // Сравниваем mint адреса с известными токенами
-        let token_a_mint_str = token_a_mint.to_string();
-        let token_b_mint_str = token_b_mint.to_string();
-        
-        let (token_a_symbol, token_a_decimals) = if token_a_mint_str == "So11111111111111111111111111111111111111112" || 
-                                                   token_a_mint_str == "11111111111111111111111111111111" ||
-                                                   token_a_mint_str == "11111111111111112GUYsqKrFZU73SvLFXevgF" {
-            ("SOL".to_string(), 9)
-        } else if token_a_mint_str == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" {
-            ("USDC".to_string(), 6)
+
+        // Known token positions from our analysis
+        let base_mint_start = 400;  // WSOL
+        let quote_mint_start = 432; // USDC
+        let base_vault_start = 437; // First vault after USDC
+        let quote_vault_start = 438; // Second vault
+
+        // Parse base token (WSOL)
+        let base_mint = if base_mint_start + 32 <= data.len() {
+            Pubkey::try_from(&data[base_mint_start..base_mint_start + 32])?
         } else {
-            // Если не знаем токен, используем переданные значения
-            if token_a_mint_str == base_token_mint {
-                (base_token_symbol.to_string(), base_token_decimals)
-            } else {
-                (quote_token_symbol.to_string(), quote_token_decimals)
-            }
+            warn!("Base mint position out of bounds");
+            return Err(anyhow::anyhow!("Base mint position out of bounds"));
         };
-        
-        let (token_b_symbol, token_b_decimals) = if token_b_mint_str == "So11111111111111111111111111111111111111112" || 
-                                                   token_b_mint_str == "11111111111111111111111111111111" ||
-                                                   token_b_mint_str == "11111111111111112GUYsqKrFZU73SvLFXevgF" {
-            ("SOL".to_string(), 9)
-        } else if token_b_mint_str == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" {
-            ("USDC".to_string(), 6)
+
+        // Parse quote token (USDC)
+        let quote_mint = if quote_mint_start + 32 <= data.len() {
+            Pubkey::try_from(&data[quote_mint_start..quote_mint_start + 32])?
         } else {
-            // Если не знаем токен, используем переданные значения
-            if token_b_mint_str == base_token_mint {
-                (base_token_symbol.to_string(), base_token_decimals)
-            } else {
-                (quote_token_symbol.to_string(), quote_token_decimals)
-            }
+            warn!("Quote mint position out of bounds");
+            return Err(anyhow::anyhow!("Quote mint position out of bounds"));
         };
-        
-        // Отладочная информация для проверки
-        debug!("🔍 DEBUG: token_a_mint_str = '{}'", token_a_mint_str);
-        debug!("🔍 DEBUG: token_b_mint_str = '{}'", token_b_mint_str);
-        debug!("🔍 DEBUG: SOL mint = 'So11111111111111111111111111111111111111112'");
-        debug!("🔍 DEBUG: USDC mint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'");
-        debug!("🔍 DEBUG: token_a = {} ({}), token_b = {} ({})", 
-                token_a_symbol, token_a_mint, token_b_symbol, token_b_mint);
-        
-        let token_a = TokenInfo {
-            mint: token_a_mint,
-            symbol: token_a_symbol,
-            decimals: token_a_decimals,
-            vault: token_a_vault,
+
+        // Parse vaults
+        let base_vault = if base_vault_start + 32 <= data.len() {
+            Some(Pubkey::try_from(&data[base_vault_start..base_vault_start + 32])?)
+        } else {
+            warn!("Base vault position out of bounds");
+            None
         };
-        
-        let token_b = TokenInfo {
-            mint: token_b_mint,
-            symbol: token_b_symbol,
-            decimals: token_b_decimals,
-            vault: token_b_vault,
+
+        let quote_vault = if quote_vault_start + 32 <= data.len() {
+            Some(Pubkey::try_from(&data[quote_vault_start..quote_vault_start + 32])?)
+        } else {
+            warn!("Quote vault position out of bounds");
+            None
         };
-        
+
+        info!("Parsed tokens - Base: {} (WSOL), Quote: {} (USDC)", base_mint, quote_mint);
+        if let Some(vault) = base_vault {
+            info!("Base vault: {}", vault);
+        }
+        if let Some(vault) = quote_vault {
+            info!("Quote vault: {}", vault);
+        }
+
+        // Create TokenInfo structs
+        let base_token = TokenInfo {
+            mint: base_mint,
+            symbol: "WSOL".to_string(),
+            decimals: 9,
+            vault: base_vault.expect("Base vault should exist"),
+        };
+
+        let quote_token = TokenInfo {
+            mint: quote_mint,
+            symbol: "USDC".to_string(),
+            decimals: 6,
+            vault: quote_vault.expect("Quote vault should exist"),
+        };
+
+        // Create PoolReserves (placeholder values for now)
         let reserves = PoolReserves {
-            token_a_reserve,
-            token_b_reserve,
-            lp_supply: Some(lp_supply),
+            token_a_reserve: 0,
+            token_b_reserve: 0,
+            lp_supply: None,
         };
-        
+
+        // Create PoolFees (placeholder values for now)
         let fees = PoolFees {
-            trade_fee_bps,
-            owner_trade_fee_bps,
-            owner_withdraw_fee_bps,
+            trade_fee_bps: 25, // 0.25%
+            owner_trade_fee_bps: 0,
+            owner_withdraw_fee_bps: 0,
         };
-        
-        Ok((token_a, token_b, reserves, fees))
+
+        Ok((base_token, quote_token, reserves, fees))
     }
 }

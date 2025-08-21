@@ -1,10 +1,9 @@
 // Константы для известных токенов
 const KNOWN_TOKENS: &[(&str, &str, u8)] = &[
-    // SOL variants
+    // SOL (Wrapped SOL) - правильный mint для пулов
     ("So11111111111111111111111111111111111111112", "SOL", 9),
-    ("11111111111111111111111111111111", "SOL", 9),
     
-    // USDC
+    // USDC - правильный mint
     ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC", 6),
     
     // USDT

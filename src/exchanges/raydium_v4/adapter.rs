@@ -67,15 +67,8 @@ impl RaydiumV4Adapter {
         // Токены теперь парсятся из данных пула
         
         // Используем парсер для реальных данных
-        let (token_a, token_b, reserves, fees) = RaydiumV4Parser::parse_pool_data(
-            data,
-            &self.config.tokens.base_token.mint,
-            &self.config.tokens.base_token.symbol,
-            self.config.tokens.base_token.decimals,
-            &self.config.tokens.quote_token.mint,
-            &self.config.tokens.quote_token.symbol,
-            self.config.tokens.quote_token.decimals,
-        )?;
+        let parser = RaydiumV4Parser;
+        let (token_a, token_b, reserves, fees) = parser.parse_pool_data(data)?;
         
         info!("🪙 Parsed tokens: {} ({}) ↔ {} ({})", 
               token_a.symbol, token_a.mint, token_b.symbol, token_b.mint);
