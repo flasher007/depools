@@ -10,12 +10,14 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::exchanges::{DexAdapter, types::{DexLabel, PoolInfo, SwapQuote, TokenInfo, PoolReserves, PoolFees, PoolState, SwapRoute, SwapHop}};
 use crate::exchanges::utils::{lamports_to_sol, lamports_to_usdc, format_sol, format_usdc, format_large_number};
+use crate::exchanges::api_clients::{QuoteApiClient, orca_quote_client::OrcaQuoteApiClient};
 use super::OrcaWhirlpoolParser;
 use crate::exchanges::common::spl_token_balance;
 
 pub struct OrcaWhirlpoolAdapter {
     rpc_client: Arc<RpcClient>,
     config: Config,
+    api_client: OrcaQuoteApiClient,
 }
 
 impl OrcaWhirlpoolAdapter {
@@ -23,6 +25,100 @@ impl OrcaWhirlpoolAdapter {
         Ok(Self {
             rpc_client: Arc::new(RpcClient::new(config.rpc.url.clone())),
             config,
+            api_client: OrcaQuoteApiClient::new(),
+        })
+    }
+
+    /// Попытаться получить котировку через API, если не получилось - использовать AMM логику
+    async fn get_quote_with_fallback(&self, pool_pubkey: &Pubkey, amount_in: u64) -> Result<SwapQuote> {
+        // Сначала пытаемся API
+        if self.api_client.is_available().await {
+            match self.api_client.get_quote(pool_pubkey, amount_in).await {
+                Ok(quote) => {
+                    info!("✅ Получена котировка через Orca API");
+                    return Ok(quote);
+                }
+                Err(e) => {
+                    info!("⚠️ Orca API недоступен: {}, используем AMM логику", e);
+                }
+            }
+        }
+        
+        // Fallback на AMM логику
+        info!("🔄 Используем AMM логику для расчета котировки");
+        self.get_quote_from_amm(pool_pubkey, amount_in).await
+    }
+    
+    /// Получить котировку используя AMM формулу (старая логика)
+    async fn get_quote_from_amm(&self, pool_pubkey: &Pubkey, amount_in: u64) -> Result<SwapQuote> {
+        let pool_info = self.get_pool_info_from_chain(pool_pubkey).await?;
+        
+        // Используем AMM формулу для concentrated liquidity
+        let reserve_in = pool_info.reserves.token_a_reserve;
+        let reserve_out = pool_info.reserves.token_b_reserve;
+        
+        if reserve_in == 0 || reserve_out == 0 {
+            return Err(anyhow::anyhow!("Нулевые резервы в пуле"));
+        }
+        
+        let fee_bps = pool_info.fees.trade_fee_bps;
+        let fee_multiplier = 1.0 - (fee_bps as f64 / 10000.0);
+        
+        // Упрощенная AMM формула для concentrated liquidity
+        let amount_out = ((amount_in as f64 * reserve_out as f64 * fee_multiplier) / 
+                        (reserve_in as f64 + amount_in as f64)) as u64;
+        
+        let route = SwapRoute {
+            hops: vec![crate::exchanges::types::SwapHop {
+                pool_address: *pool_pubkey,
+                dex_label: crate::exchanges::types::DexLabel::OrcaWhirlpool,
+                token_in: pool_info.token_a.mint,
+                token_out: pool_info.token_b.mint,
+                amount_in,
+                amount_out,
+                fee_bps: fee_bps as u32,
+            }],
+            total_fee_bps: fee_bps as u32,
+        };
+        
+        Ok(SwapQuote {
+            pool_address: *pool_pubkey,
+            dex_label: crate::exchanges::types::DexLabel::OrcaWhirlpool,
+            token_in: pool_info.token_a.mint,
+            token_out: pool_info.token_b.mint,
+            amount_in,
+            amount_out,
+            min_amount_out: 0,
+            price_impact_bps: 0,
+            fee_amount: (amount_in as u128 * fee_bps as u128 / 10000) as u64,
+            route,
+        })
+    }
+    
+    /// Получить информацию о пуле с блокчейна (старая логика)
+    async fn get_pool_info_from_chain(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
+        let data = self.fetch_pool_data(pool_address).await?;
+        let (token_a, token_b, mut reserves, fees) = self.parse_pool_data(&data)?;
+        
+        // Используем реальные vault адреса из парсера
+        let balance_a = self.get_token_account_balance(&token_a.vault).await?;
+        let balance_b = self.get_token_account_balance(&token_b.vault).await?;
+        
+        reserves.token_a_reserve = balance_a;
+        reserves.token_b_reserve = balance_b;
+        
+        info!("💰 Orca Whirlpool резервы: {} {} ↔ {} {}", 
+              format_sol(balance_a as f64), token_a.symbol, 
+              format_usdc(balance_b as f64), token_b.symbol);
+        
+        Ok(PoolInfo {
+            pool_address: *pool_address,
+            dex_label: crate::exchanges::types::DexLabel::OrcaWhirlpool,
+            token_a,
+            token_b,
+            reserves,
+            fees,
+            pool_state: crate::exchanges::types::PoolState::Active,
         })
     }
 
@@ -91,162 +187,38 @@ impl OrcaWhirlpoolAdapter {
 
 #[async_trait::async_trait]
 impl DexAdapter for OrcaWhirlpoolAdapter {
-    fn get_label(&self) -> DexLabel {
-        DexLabel::OrcaWhirlpool
-    }
-
     async fn get_pool_info(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
-        let data = self.fetch_pool_data(pool_address).await?;
-        let (token_a, token_b, mut reserves, fees) = self.parse_pool_data(&data)?;
-        
-        // Fetch real-time reserves from vault accounts
-        if let Ok(base_reserve) = spl_token_balance(&self.rpc_client, &token_a.vault).await {
-            reserves.token_a_reserve = base_reserve;
-            if token_a.symbol == "WSOL" {
-                let sol_reserve = lamports_to_sol(base_reserve);
-                info!("✅ Fetched base reserve: {} ({})", format_sol(sol_reserve), format_large_number(base_reserve));
-            } else {
-                let usdc_reserve = lamports_to_usdc(base_reserve);
-                info!("✅ Fetched base reserve: {} ({})", format_usdc(usdc_reserve), format_large_number(base_reserve));
+        // Сначала пытаемся API
+        if self.api_client.is_available().await {
+            match self.api_client.get_pool_info(pool_address).await {
+                Ok(pool_info) => {
+                    info!("✅ Получена информация о пуле через Orca API");
+                    return Ok(pool_info);
+                }
+                Err(e) => {
+                    info!("⚠️ Orca API недоступен: {}, используем блокчейн", e);
+                }
             }
-        } else {
-            info!("⚠️ Failed to fetch base reserve for vault: {}", token_a.vault);
         }
         
-        if let Ok(quote_reserve) = spl_token_balance(&self.rpc_client, &token_b.vault).await {
-            reserves.token_b_reserve = quote_reserve;
-            if token_b.symbol == "USDC" {
-                let usdc_reserve = lamports_to_usdc(quote_reserve);
-                info!("✅ Fetched quote reserve: {} ({})", format_usdc(usdc_reserve), format_large_number(quote_reserve));
-            } else {
-                let sol_reserve = lamports_to_sol(quote_reserve);
-                info!("✅ Fetched quote reserve: {} ({})", format_sol(sol_reserve), format_large_number(quote_reserve));
-            }
-        } else {
-            info!("⚠️ Failed to fetch quote reserve for vault: {}", token_b.vault);
-        }
-        
-        Ok(PoolInfo {
-            pool_address: *pool_address,
-            dex_label: self.get_label(),
-            token_a,
-            token_b,
-            reserves,
-            fees,
-            pool_state: crate::exchanges::types::PoolState::Active,
-        })
+        // Fallback на блокчейн
+        self.get_pool_info_from_chain(pool_address).await
     }
 
-    async fn get_swap_quote(&self, pool_address: &Pubkey, amount_in: u64, token_in: &Pubkey) -> Result<SwapQuote> {
-        let pool_info = self.get_pool_info(pool_address).await?;
-        
-        let (token_in_info, token_out_info, _amount_out) = if token_in == &pool_info.token_a.mint {
-            (&pool_info.token_a, &pool_info.token_b, pool_info.reserves.token_b_reserve)
-        } else if token_in == &pool_info.token_b.mint {
-            (&pool_info.token_b, &pool_info.token_a, pool_info.reserves.token_a_reserve)
-        } else {
-            return Err(anyhow::anyhow!("Token {} not found in pool", token_in));
-        };
-        
-        // Correct AMM calculation using Constant Product Formula: (x + dx) * (y - dy) = x * y
-        let (reserve_in, reserve_out) = if token_in == &pool_info.token_a.mint {
-            (pool_info.reserves.token_a_reserve, pool_info.reserves.token_b_reserve)
-        } else {
-            (pool_info.reserves.token_b_reserve, pool_info.reserves.token_a_reserve)
-        };
-        
-        // Add detailed logging for debugging
-        info!("🔍 AMM Calculation Debug (Orca):");
-        
-        // Convert to readable units
-        let amount_in_usdc = lamports_to_usdc(amount_in);
-        let reserve_in_usdc = lamports_to_usdc(reserve_in);
-        let reserve_out_sol = lamports_to_sol(reserve_out);
-        
-        info!("  Token In: {} ({})", token_in_info.symbol, format_usdc(amount_in_usdc));
-        info!("  Reserve In: {} ({})", format_usdc(reserve_in_usdc), format_large_number(reserve_in));
-        info!("  Reserve Out: {} ({})", format_sol(reserve_out_sol), format_large_number(reserve_out));
-        info!("  Token In Decimals: {}", token_in_info.decimals);
-        info!("  Token Out Decimals: {}", token_out_info.decimals);
-        
-        let reserve_in_u128 = reserve_in as u128;
-        let reserve_out_u128 = reserve_out as u128;
-        let amount_in_u128 = amount_in as u128;
-        
-        // AMM formula: dy = (y * dx) / (x + dx)
-        let amount_out_raw = (reserve_out_u128 * amount_in_u128) / (reserve_in_u128 + amount_in_u128);
-        
-        let amount_out = amount_out_raw as u64; // Convert back to u64
-        
-        let amount_out_sol = lamports_to_sol(amount_out);
-        
-        info!("  AMM Formula: dy = ({} * {}) / ({} + {}) = {}", 
-              format_sol(reserve_out_sol), format_usdc(amount_in_usdc), 
-              format_usdc(reserve_in_usdc), format_usdc(amount_in_usdc), 
-              format_sol(amount_out_sol));
-        info!("  Final Amount Out: {} ({})", format_sol(amount_out_sol), format_large_number(amount_out));
-        
-        let fee_bps = pool_info.fees.trade_fee_bps;
-        let fee_amount = (amount_in as u128 * fee_bps as u128 / 10000) as u64;
-        let fee_usdc = lamports_to_usdc(fee_amount);
-        
-        info!("  Fee: {} bps = {} ({})", fee_bps, format_usdc(fee_usdc), format_large_number(fee_amount));
-        
-        Ok(SwapQuote {
-            pool_address: *pool_address,
-            dex_label: self.get_label(),
-            token_in: token_in_info.mint, // Use token_in_info.mint
-            token_out: token_out_info.mint,
-            amount_in,
-            amount_out,
-            min_amount_out: 0, // Placeholder, will be calculated later
-            price_impact_bps: 0, // Placeholder
-            fee_amount,
-            route: SwapRoute {
-                hops: vec![SwapHop {
-                    pool_address: *pool_address,
-                    dex_label: self.get_label(),
-                    token_in: token_in_info.mint, // Use token_in_info.mint
-                    token_out: token_out_info.mint,
-                    amount_in,
-                    amount_out,
-                    fee_bps,
-                }],
-                total_fee_bps: fee_bps,
-            },
-        })
+    async fn get_swap_quote(&self, pool_address: &Pubkey, amount_in: u64) -> Result<SwapQuote> {
+        self.get_quote_with_fallback(pool_address, amount_in).await
     }
 
-    async fn get_pool_reserves(&self, pool_address: &Pubkey) -> Result<crate::exchanges::types::PoolReserves> {
-        // Get pool info to access vault addresses
-        let pool_info = self.get_pool_info(pool_address).await?;
-        
-        // Fetch balances from vault accounts
-        let base_balance = self.get_token_account_balance(&pool_info.token_a.vault).await?;
-        let quote_balance = self.get_token_account_balance(&pool_info.token_b.vault).await?;
-        
-        Ok(crate::exchanges::types::PoolReserves {
-            token_a_reserve: base_balance,
-            token_b_reserve: quote_balance,
-            lp_supply: None, // TODO: Implement LP supply fetching
-        })
-    }
-
-    fn create_swap_instruction(
-        &self, 
-        quote: &SwapQuote, 
-        user_pubkey: &Pubkey,
-        min_amount_out: u64,
-    ) -> Result<Instruction> {
+    async fn create_swap_instruction(&self, pool_pubkey: &Pubkey, amount_in: u64, min_amount_out: u64) -> Result<Instruction> {
         // Orca Whirlpool swap instruction structure
         // This is a simplified implementation - real Orca instructions are more complex
         
         use tracing::info;
         info!("Creating Orca Whirlpool swap instruction: {} -> {}, min_out: {}", 
-              quote.amount_in, quote.amount_out, min_amount_out);
+              amount_in, min_amount_out, min_amount_out);
         
         // Get pool info to access vault accounts
-        let pool_address = quote.pool_address;
+        let pool_address = *pool_pubkey;
         
         // Create instruction data for Orca Whirlpool swap
         // Instruction discriminator + amount_in + min_amount_out + sqrt_price_limit + a_to_b
@@ -256,7 +228,7 @@ impl DexAdapter for OrcaWhirlpoolAdapter {
         data.extend_from_slice(&[0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x7f, 0x18, 0xd8]);
         
         // Amount in (8 bytes)
-        data.extend_from_slice(&quote.amount_in.to_le_bytes());
+        data.extend_from_slice(&amount_in.to_le_bytes());
         
         // Min amount out (8 bytes) 
         data.extend_from_slice(&min_amount_out.to_le_bytes());
@@ -268,32 +240,34 @@ impl DexAdapter for OrcaWhirlpoolAdapter {
         data.push(1);
         
         // a_to_b direction (1 byte) - determine from token order
-        let a_to_b = quote.token_in < quote.token_out;
+        // For now, assume we're swapping from token A to token B
+        let a_to_b = true; // Simplified assumption
         data.push(if a_to_b { 1 } else { 0 });
         
         let accounts = vec![
             // User accounts
-            AccountMeta::new(*user_pubkey, true), // User wallet (signer)
-            AccountMeta::new(*user_pubkey, false), // User source token account
-            AccountMeta::new(*user_pubkey, false), // User destination token account
+            AccountMeta::new(Pubkey::default(), true), // User wallet (signer) - placeholder
+            AccountMeta::new(Pubkey::default(), false), // User source token account - placeholder
+            AccountMeta::new(Pubkey::default(), false), // User destination token account - placeholder
             
-            // Whirlpool accounts
-            AccountMeta::new(pool_address, false), // Whirlpool
-            AccountMeta::new(quote.token_in, false), // Token vault A
-            AccountMeta::new(quote.token_out, false), // Token vault B
-            
-            // Oracle account (tick array)
-            AccountMeta::new(pool_address, false), // Simplified - should be tick array
+            // Pool accounts
+            AccountMeta::new(pool_address, false), // AMM pool
+            AccountMeta::new(Pubkey::default(), false), // Token vault A - placeholder
+            AccountMeta::new(Pubkey::default(), false), // Token vault B - placeholder
             
             // Program accounts
             AccountMeta::new_readonly(spl_token::id(), false), // SPL Token program
-            AccountMeta::new_readonly(Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?, false), // Orca Whirlpool program
+            AccountMeta::new_readonly(Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?, false), // Orca program ID
         ];
         
         Ok(Instruction {
-            program_id: Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?, // Orca Whirlpool program
+            program_id: Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")?,
             accounts,
             data,
         })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

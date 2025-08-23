@@ -20,34 +20,24 @@ pub struct TransactionBuilder;
 
 impl TransactionBuilder {
     /// Build atomic arbitrage transaction with ComputeBudget and two swap instructions
-    pub fn build_arbitrage_transaction(
+    pub async fn build_arbitrage_transaction(
         &self,
         opportunity: &ArbitrageOpportunity,
         user_keypair: &Keypair,
-        recent_blockhash: Hash,
-        adapters: &[Box<dyn DexAdapter>],
+        route_a_adapter: &Box<dyn DexAdapter>,
+        route_b_adapter: &Box<dyn DexAdapter>,
         slippage_bps: u32,
         priority_fee: u64,
     ) -> Result<Transaction> {
-        info!("🔨 Building atomic arbitrage transaction");
-        let amount_in_sol = lamports_to_sol(opportunity.route_a.hops[0].amount_in);
-        let amount_out_sol = lamports_to_sol(opportunity.route_b.hops[0].amount_out);
-        info!("💰 Opportunity: {} -> {}", format_sol(amount_in_sol), format_sol(amount_out_sol));
+        info!("🔨 Building arbitrage transaction...");
         
         let mut instructions = Vec::new();
         
         // 1. Add ComputeBudget instructions
-        let compute_units = 400_000; // Conservative estimate for arbitrage
-        let compute_budget_instructions = create_compute_budget_instructions(compute_units, priority_fee);
+        let compute_budget_instructions = create_compute_budget_instructions(400_000, priority_fee);
         instructions.extend(compute_budget_instructions);
-        let priority_fee_sol = lamports_to_sol(priority_fee);
-        info!("✅ Added ComputeBudget instructions: {} CU, {} priority fee", compute_units, format_sol(priority_fee_sol));
         
-        // 2. Find adapters for each route
-        let route_a_adapter = self.find_adapter_for_dex(adapters, opportunity.route_a.hops[0].dex_label)?;
-        let route_b_adapter = self.find_adapter_for_dex(adapters, opportunity.route_b.hops[0].dex_label)?;
-        
-        // 3. Create first swap instruction (Route A)
+        // 2. Create first swap instruction (Route A)
         let quote_a = SwapQuote {
             pool_address: opportunity.route_a.hops[0].pool_address,
             dex_label: opportunity.route_a.hops[0].dex_label,
@@ -63,18 +53,17 @@ impl TransactionBuilder {
         
         let min_out_a = calculate_min_out(quote_a.amount_out, slippage_bps);
         let swap_instruction_a = route_a_adapter.create_swap_instruction(
-            &quote_a,
-            &user_keypair.pubkey(),
+            &quote_a.pool_address,
+            quote_a.amount_in,
             min_out_a,
-        )?;
+        ).await?;
         instructions.push(swap_instruction_a);
         let amount_in_sol = lamports_to_sol(quote_a.amount_in);
         let amount_out_sol = lamports_to_sol(quote_a.amount_out);
-        let min_out_sol = lamports_to_sol(min_out_a);
-        info!("✅ Added first swap instruction: {} -> {} (min_out: {})", 
-              format_sol(amount_in_sol), format_sol(amount_out_sol), format_sol(min_out_sol));
+        info!("📊 Route A: {} SOL → {} SOL (min_out: {})", 
+              format_sol(amount_in_sol), format_sol(amount_out_sol), format_sol(lamports_to_sol(min_out_a)));
         
-        // 4. Create second swap instruction (Route B)
+        // 3. Create second swap instruction (Route B)
         let quote_b = SwapQuote {
             pool_address: opportunity.route_b.hops[0].pool_address,
             dex_label: opportunity.route_b.hops[0].dex_label,
@@ -90,40 +79,22 @@ impl TransactionBuilder {
         
         let min_out_b = calculate_min_out(quote_b.amount_out, slippage_bps);
         let swap_instruction_b = route_b_adapter.create_swap_instruction(
-            &quote_b,
-            &user_keypair.pubkey(),
+            &quote_b.pool_address,
+            quote_b.amount_in,
             min_out_b,
-        )?;
+        ).await?;
         instructions.push(swap_instruction_b);
         let amount_in_sol = lamports_to_sol(quote_b.amount_in);
         let amount_out_sol = lamports_to_sol(quote_b.amount_out);
-        let min_out_sol = lamports_to_sol(min_out_b);
-        info!("✅ Added second swap instruction: {} -> {} (min_out: {})", 
-              format_sol(amount_in_sol), format_sol(amount_out_sol), format_sol(min_out_sol));
+        info!("📊 Route B: {} SOL → {} SOL (min_out: {})", 
+              format_sol(amount_in_sol), format_sol(amount_out_sol), format_sol(lamports_to_sol(min_out_b)));
         
-        // 5. Build transaction
+        // 4. Build transaction
         let message = Message::new(&instructions, Some(&user_keypair.pubkey()));
         let mut transaction = Transaction::new_unsigned(message);
-        transaction.partial_sign(&[user_keypair], recent_blockhash);
         
-        info!("🎯 Built atomic transaction with {} instructions", instructions.len());
-        info!("📝 Transaction size: {} bytes", transaction.message_data().len());
-        
+        info!("✅ Arbitrage transaction built successfully");
         Ok(transaction)
-    }
-    
-    /// Find adapter for specific DEX label
-    fn find_adapter_for_dex<'a>(
-        &self,
-        adapters: &'a [Box<dyn DexAdapter>],
-        dex_label: crate::exchanges::types::DexLabel,
-    ) -> Result<&'a Box<dyn DexAdapter>> {
-        for adapter in adapters {
-            if adapter.get_label() == dex_label {
-                return Ok(adapter);
-            }
-        }
-        Err(anyhow::anyhow!("No adapter found for DEX: {:?}", dex_label))
     }
     
     /// Estimate transaction size for fee calculation

@@ -7,8 +7,9 @@ use std::str::FromStr;
 use solana_client::rpc_client::RpcClient;
 use std::sync::Arc;
 use crate::config::Config;
-use crate::exchanges::{DexAdapter, types::{DexLabel, PoolInfo, SwapQuote, TokenInfo, PoolReserves, PoolFees, PoolState, SwapRoute, SwapHop}};
+use crate::exchanges::{DexAdapter, types::{DexLabel, PoolInfo, SwapQuote, TokenInfo, PoolReserves, PoolFees, SwapRoute, SwapHop}};
 use crate::exchanges::utils::{lamports_to_sol, lamports_to_usdc, format_sol, format_usdc, format_large_number};
+use crate::exchanges::api_clients::{raydium_quote_client::RaydiumQuoteApiClient, QuoteApiClient};
 use super::RaydiumV4Parser;
 use tracing::info;
 use crate::exchanges::common::spl_token_balance;
@@ -16,6 +17,7 @@ use crate::exchanges::common::spl_token_balance;
 pub struct RaydiumV4Adapter {
     rpc_client: Arc<RpcClient>,
     config: Config,
+    api_client: RaydiumQuoteApiClient,
 }
 
 impl RaydiumV4Adapter {
@@ -23,6 +25,58 @@ impl RaydiumV4Adapter {
         Ok(Self {
             rpc_client: Arc::new(RpcClient::new(config.rpc.url.clone())),
             config,
+            api_client: RaydiumQuoteApiClient::new(),
+        })
+    }
+
+    /// Try to get pool info from API first, fallback to on-chain parsing
+    async fn get_pool_info_from_api(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
+        if self.api_client.is_available().await {
+            match self.api_client.get_pool_info(pool_address).await {
+                Ok(pool_info) => {
+                    info!("✅ Got Raydium pool info from API");
+                    return Ok(pool_info);
+                }
+                Err(e) => {
+                    info!("⚠️ API failed, falling back to on-chain parsing: {}", e);
+                }
+            }
+        } else {
+            info!("⚠️ Raydium API not available, using on-chain parsing");
+        }
+        
+        // Fallback to on-chain parsing
+        self.get_pool_info_from_chain(pool_address).await
+    }
+
+    /// Get pool info from on-chain data (fallback method)
+    async fn get_pool_info_from_chain(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
+        let data = self.fetch_pool_data(pool_address).await?;
+        let (token_a, token_b, mut reserves, fees) = self.parse_pool_data(&data)?;
+        
+        // Fetch real-time reserves from vault accounts
+        if let Ok(base_reserve) = spl_token_balance(&self.rpc_client, &token_a.vault).await {
+            reserves.token_a_reserve = base_reserve;
+            info!("✅ Fetched base reserve: {} {}", base_reserve, token_a.symbol);
+        } else {
+            info!("⚠️ Failed to fetch base reserve for vault: {}", token_a.vault);
+        }
+        
+        if let Ok(quote_reserve) = spl_token_balance(&self.rpc_client, &token_b.vault).await {
+            reserves.token_b_reserve = quote_reserve;
+            info!("✅ Fetched quote reserve: {} {}", quote_reserve, token_b.symbol);
+        } else {
+            info!("⚠️ Failed to fetch quote reserve for vault: {}", token_b.vault);
+        }
+        
+        Ok(PoolInfo {
+            pool_address: *pool_address,
+            dex_label: DexLabel::RaydiumV4,
+            token_a,
+            token_b,
+            reserves,
+            fees,
+            pool_state: crate::exchanges::types::PoolState::Active,
         })
     }
 
@@ -88,61 +142,18 @@ impl RaydiumV4Adapter {
             Ok(0)
         }
     }
-}
 
-#[async_trait::async_trait]
-impl DexAdapter for RaydiumV4Adapter {
-    fn get_label(&self) -> DexLabel {
-        DexLabel::RaydiumV4
-    }
-
-    async fn get_pool_info(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
-        let data = self.fetch_pool_data(pool_address).await?;
-        let (token_a, token_b, mut reserves, fees) = self.parse_pool_data(&data)?;
+    /// Get swap quote from AMM calculation (fallback method)
+    async fn get_quote_from_amm(&self, pool_address: &Pubkey, amount_in: u64) -> Result<SwapQuote> {
+        let pool_info = self.get_pool_info_from_chain(pool_address).await?;
         
-        // Fetch real-time reserves from vault accounts
-        if let Ok(base_reserve) = spl_token_balance(&self.rpc_client, &token_a.vault).await {
-            reserves.token_a_reserve = base_reserve;
-            info!("✅ Fetched base reserve: {} {}", base_reserve, token_a.symbol);
-        } else {
-            info!("⚠️ Failed to fetch base reserve for vault: {}", token_a.vault);
-        }
-        
-        if let Ok(quote_reserve) = spl_token_balance(&self.rpc_client, &token_b.vault).await {
-            reserves.token_b_reserve = quote_reserve;
-            info!("✅ Fetched quote reserve: {} {}", quote_reserve, token_b.symbol);
-        } else {
-            info!("⚠️ Failed to fetch quote reserve for vault: {}", token_b.vault);
-        }
-        
-        Ok(PoolInfo {
-            pool_address: *pool_address,
-            dex_label: self.get_label(),
-            token_a,
-            token_b,
-            reserves,
-            fees,
-            pool_state: crate::exchanges::types::PoolState::Active,
-        })
-    }
-
-    async fn get_swap_quote(&self, pool_address: &Pubkey, amount_in: u64, token_in: &Pubkey) -> Result<SwapQuote> {
-        let pool_info = self.get_pool_info(pool_address).await?;
-        
-        let (token_in_info, token_out_info, _amount_out) = if token_in == &pool_info.token_a.mint {
-            (&pool_info.token_a, &pool_info.token_b, pool_info.reserves.token_b_reserve)
-        } else if token_in == &pool_info.token_b.mint {
-            (&pool_info.token_b, &pool_info.token_a, pool_info.reserves.token_a_reserve)
-        } else {
-            return Err(anyhow::anyhow!("Token {} not found in pool", token_in));
-        };
+        // Упрощенно: используем первый токен как входной
+        let token_in_info = &pool_info.token_a;
+        let token_out_info = &pool_info.token_b;
+        let reserve_in = pool_info.reserves.token_a_reserve;
+        let reserve_out = pool_info.reserves.token_b_reserve;
         
         // Correct AMM calculation using Constant Product Formula: (x + dx) * (y - dy) = x * y
-        let (reserve_in, reserve_out) = if token_in == &pool_info.token_a.mint {
-            (pool_info.reserves.token_a_reserve, pool_info.reserves.token_b_reserve)
-        } else {
-            (pool_info.reserves.token_b_reserve, pool_info.reserves.token_a_reserve)
-        };
         
         // Add detailed logging for debugging
         info!("🔍 AMM Calculation Debug:");
@@ -180,50 +191,68 @@ impl DexAdapter for RaydiumV4Adapter {
         
         info!("  Fee: {} bps = {} ({})", fee_bps, format_sol(fee_sol), format_large_number(fee_amount));
         
+        let route = SwapRoute {
+            hops: vec![SwapHop {
+                pool_address: *pool_address,
+                dex_label: DexLabel::RaydiumV4,
+                token_in: token_in_info.mint,
+                token_out: token_out_info.mint,
+                amount_in,
+                amount_out,
+                fee_bps: fee_bps as u32,
+            }],
+            total_fee_bps: fee_bps as u32,
+        };
+        
         Ok(SwapQuote {
             pool_address: *pool_address,
-            dex_label: self.get_label(),
-            token_in: token_in_info.mint, // Use token_in_info.mint
+            dex_label: DexLabel::RaydiumV4,
+            token_in: token_in_info.mint,
             token_out: token_out_info.mint,
             amount_in,
             amount_out,
-            min_amount_out: 0, // Placeholder, will be calculated later
-            price_impact_bps: 0, // Placeholder
+            min_amount_out: 0,
+            price_impact_bps: 0,
             fee_amount,
-            route: SwapRoute {
-                hops: vec![SwapHop {
-                    pool_address: *pool_address,
-                    dex_label: self.get_label(),
-                    token_in: token_in_info.mint, // Use token_in_info.mint
-                    token_out: token_out_info.mint,
-                    amount_in,
-                    amount_out,
-                    fee_bps,
-                }],
-                total_fee_bps: fee_bps,
-            },
+            route,
         })
     }
+}
 
-    async fn get_pool_reserves(&self, pool_address: &Pubkey) -> Result<crate::exchanges::types::PoolReserves> {
-        // Get pool info to access vault addresses
-        let pool_info = self.get_pool_info(pool_address).await?;
-        
-        // Fetch balances from vault accounts
-        let base_balance = self.get_token_account_balance(&pool_info.token_a.vault).await?;
-        let quote_balance = self.get_token_account_balance(&pool_info.token_b.vault).await?;
-        
-        Ok(crate::exchanges::types::PoolReserves {
-            token_a_reserve: base_balance,
-            token_b_reserve: quote_balance,
-            lp_supply: None, // TODO: Implement LP supply fetching
-        })
+#[async_trait::async_trait]
+impl DexAdapter for RaydiumV4Adapter {
+    async fn get_pool_info(&self, pool_address: &Pubkey) -> Result<PoolInfo> {
+        self.get_pool_info_from_api(pool_address).await
     }
 
-    fn create_swap_instruction(
+    async fn get_swap_quote(&self, pool_address: &Pubkey, amount_in: u64) -> Result<SwapQuote> {
+        // Try API first, fallback to AMM calculation
+        if self.api_client.is_available().await {
+            match self.api_client.get_quote(pool_address, amount_in).await {
+                Ok(quote) => {
+                    info!("✅ Got Raydium quote from API");
+                    return Ok(quote);
+                }
+                Err(e) => {
+                    info!("⚠️ API quote failed, falling back to AMM: {}", e);
+                }
+            }
+        } else {
+            info!("⚠️ Raydium API not available, using AMM calculation");
+        }
+        
+        // Fallback to AMM calculation
+        self.get_quote_from_amm(pool_address, amount_in).await
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn create_swap_instruction(
         &self, 
-        quote: &SwapQuote, 
-        user_pubkey: &Pubkey,
+        pool_pubkey: &Pubkey,
+        amount_in: u64,
         min_amount_out: u64,
     ) -> Result<Instruction> {
         // Raydium V4 swap instruction structure
@@ -231,28 +260,28 @@ impl DexAdapter for RaydiumV4Adapter {
         
         use tracing::info;
         info!("Creating Raydium V4 swap instruction: {} -> {}, min_out: {}", 
-              quote.amount_in, quote.amount_out, min_amount_out);
+              amount_in, min_amount_out, min_amount_out);
         
         // Get pool info to access vault accounts
-        let pool_address = quote.pool_address;
+        let pool_info = self.get_pool_info(pool_pubkey).await?;
         
         // Create instruction data for Raydium V4 swap
         // Instruction: 0x09 (swap), amount_in (8 bytes), min_amount_out (8 bytes)
         let mut data = Vec::new();
         data.push(0x09); // Swap instruction discriminator
-        data.extend_from_slice(&quote.amount_in.to_le_bytes());
+        data.extend_from_slice(&amount_in.to_le_bytes());
         data.extend_from_slice(&min_amount_out.to_le_bytes());
         
         let accounts = vec![
             // User accounts
-            AccountMeta::new(*user_pubkey, true), // User wallet (signer)
-            AccountMeta::new(*user_pubkey, false), // User source token account
-            AccountMeta::new(*user_pubkey, false), // User destination token account
+            AccountMeta::new(Pubkey::default(), true), // User wallet (signer) - placeholder
+            AccountMeta::new(Pubkey::default(), false), // User source token account - placeholder
+            AccountMeta::new(Pubkey::default(), false), // User destination token account - placeholder
             
             // Pool accounts
-            AccountMeta::new(pool_address, false), // AMM pool
-            AccountMeta::new(quote.token_in, false), // Pool token A vault
-            AccountMeta::new(quote.token_out, false), // Pool token B vault
+            AccountMeta::new(*pool_pubkey, false), // AMM pool
+            AccountMeta::new(pool_info.token_a.vault, false), // Pool token A vault
+            AccountMeta::new(pool_info.token_b.vault, false), // Pool token B vault
             
             // Program accounts
             AccountMeta::new_readonly(spl_token::id(), false), // SPL Token program

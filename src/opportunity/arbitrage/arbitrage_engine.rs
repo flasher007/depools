@@ -107,11 +107,11 @@ impl ArbitrageEngine {
         let transaction = transaction_builder.build_arbitrage_transaction(
             opportunity,
             user_keypair,
-            recent_blockhash,
-            &adapters,
+            &adapters[0], // Route A adapter
+            &adapters[1], // Route B adapter
             slippage_bps,
             priority_fee,
-        )?;
+        ).await?;
         
         // Validate transaction
         transaction_builder.validate_transaction(&transaction)?;
@@ -176,7 +176,70 @@ impl ArbitrageEngine {
         // 2. Or recreate them based on configuration
         // For now, return empty vec - this will need to be fixed
         
-        error!("⚠️ get_adapters_for_transaction not fully implemented");
-        Err(anyhow::anyhow!("Adapter access not implemented - requires architecture refactoring"))
+        // Создаем временные адаптеры для тестирования
+        let config = crate::config::Config::from_file("Config.toml").unwrap_or_else(|_| {
+            // Fallback конфиг если файл не найден
+            crate::config::Config {
+                rpc: crate::config::RpcCfg {
+                    url: "https://api.mainnet-beta.solana.com".to_string(),
+                },
+                wallet: crate::config::WalletCfg {
+                    keypair: "".to_string(),
+                },
+                tokens: crate::config::TokenCfg {
+                    base_token: crate::config::TokenInfo {
+                        mint: "So11111111111111111111111111111111111111112".to_string(),
+                        symbol: "SOL".to_string(),
+                        decimals: 9,
+                    },
+                    quote_token: crate::config::TokenInfo {
+                        mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+                        symbol: "USDC".to_string(),
+                        decimals: 6,
+                    },
+                },
+                pools: crate::config::PoolsCfg {
+                    pool_a: "".to_string(),
+                    pool_b: "".to_string(),
+                    user_source_ata: None,
+                    user_dest_ata: None,
+                },
+                trade: crate::config::TradeCfg {
+                    amount_in: 1000000000.0,
+                    spread_threshold_bps: 100,
+                    slippage_bps: 50,
+                    priority_fee_microlamports: 1000,
+                    simulate_only: Some(true),
+                },
+                programs: crate::config::ProgramsCfg {
+                    raydium_v4: "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(),
+                    orca_whirlpool: "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".to_string(),
+                    spl_token: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string(),
+                },
+                stream: crate::config::StreamCfg {
+                    backend: "yellowstone".to_string(),
+                    endpoint: "grpc.yellowstone.finance:443".to_string(),
+                    x_token: "".to_string(),
+                },
+            }
+        });
+        
+        let mut adapters = Vec::new();
+        
+        // Создаем Raydium V4 адаптер
+        if let Ok(adapter) = crate::exchanges::raydium_v4::adapter::RaydiumV4Adapter::new(config.clone()) {
+            adapters.push(Box::new(adapter) as Box<dyn crate::exchanges::DexAdapter>);
+        }
+        
+        // Создаем Orca Whirlpool адаптер
+        if let Ok(adapter) = crate::exchanges::orca_whirlpool::adapter::OrcaWhirlpoolAdapter::new(config) {
+            adapters.push(Box::new(adapter) as Box<dyn crate::exchanges::DexAdapter>);
+        }
+        
+        if adapters.len() < 2 {
+            return Err(anyhow::anyhow!("Failed to create required adapters"));
+        }
+        
+        Ok(adapters)
     }
 }

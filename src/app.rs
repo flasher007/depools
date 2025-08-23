@@ -13,7 +13,7 @@ use crate::opportunity::scanner::CrossDexScanner;
 use crate::opportunity::scanner::AsyncOpportunityScanner;
 use crate::opportunity::arbitrage::ArbitrageEngine;
 
-use crate::exchanges::factory;
+use crate::exchanges;
 
 #[derive(Debug, Clone)]
 pub struct AppCfg {
@@ -76,7 +76,7 @@ impl AppCfg {
             simulate_only,
             rpc_url,
             keypair_path: keypair,
-            amount_in,
+            amount_in: amount_in * 1_000_000_000.0, // Convert SOL to lamports for CLI args
             spread_threshold_bps,
             slippage_bps,
             priority_fee,
@@ -162,9 +162,11 @@ async fn run_polling_mode(
         let scanner = arbitrage_engine.get_scanner();
         
         // Scan for opportunities using async scanner with configuration parameters
+        // amount_in from config is already in lamports, from CLI args we need to convert
+        let amount_in_lamports = app_cfg.amount_in as u64;
         let opportunities = scanner.scan_opportunities_async(
             &app_cfg.pool_addresses,
-            app_cfg.amount_in as u64,
+            amount_in_lamports,
             app_cfg.spread_threshold_bps,
             app_cfg.slippage_bps,
             app_cfg.priority_fee,
@@ -200,49 +202,27 @@ async fn execute_arbitrage(
     
     // 1. Создаем swap инструкцию для Route A
     let dex_a = opportunity.route_a.hops[0].dex_label;
-            let adapter_a = factory::create_adapter(dex_a, app_cfg.clone().into())?;
+            let adapter_a = exchanges::create_adapter(dex_a, app_cfg.clone().into())?;
     let min_out_a = opportunity.route_a.hops[0].amount_out.saturating_sub(
         (opportunity.route_a.hops[0].amount_in * opportunity.route_a.hops[0].fee_bps as u64) / 10000
     );
     let swap_instruction_a = adapter_a.create_swap_instruction(
-        &crate::exchanges::types::SwapQuote {
-            pool_address: opportunity.route_a.hops[0].pool_address,
-            dex_label: dex_a,
-            token_in: opportunity.route_a.hops[0].token_in,
-            token_out: opportunity.route_a.hops[0].token_out,
-            amount_in: opportunity.route_a.hops[0].amount_in,
-            amount_out: opportunity.route_a.hops[0].amount_out,
-            min_amount_out: min_out_a,
-            price_impact_bps: 0,
-            fee_amount: (opportunity.route_a.hops[0].amount_in * opportunity.route_a.hops[0].fee_bps as u64) / 10000,
-            route: opportunity.route_a.clone(),
-        },
-        &keypair.pubkey(),
+        &opportunity.route_a.hops[0].pool_address,
+        opportunity.route_a.hops[0].amount_in,
         min_out_a,
-    )?;
+    ).await?;
     
     // 2. Создаем swap инструкцию для Route B (обратное направление)
     let dex_b = opportunity.route_b.hops[0].dex_label;
-            let adapter_b = factory::create_adapter(dex_b, app_cfg.clone().into())?;
+            let adapter_b = exchanges::create_adapter(dex_b, app_cfg.clone().into())?;
     let min_out_b = opportunity.route_a.hops[0].amount_in.saturating_sub(
         (opportunity.route_b.hops[0].amount_out * opportunity.route_b.hops[0].fee_bps as u64) / 10000
     );
     let swap_instruction_b = adapter_b.create_swap_instruction(
-        &crate::exchanges::types::SwapQuote {
-            pool_address: opportunity.route_b.hops[0].pool_address,
-            dex_label: dex_b,
-            token_in: opportunity.route_b.hops[0].token_out, // Обратное направление
-            token_out: opportunity.route_b.hops[0].token_in, // Обратное направление
-            amount_in: opportunity.route_a.hops[0].amount_out, // Используем выход из A как вход в B
-            amount_out: opportunity.route_a.hops[0].amount_in, // Ожидаем вернуть исходный токен
-            min_amount_out: min_out_b,
-            price_impact_bps: 0,
-            fee_amount: (opportunity.route_b.hops[0].amount_out * opportunity.route_b.hops[0].fee_bps as u64) / 10000,
-            route: opportunity.route_b.clone(),
-        },
-        &keypair.pubkey(),
+        &opportunity.route_b.hops[0].pool_address,
+        opportunity.route_a.hops[0].amount_out, // Используем выход из A как вход в B
         min_out_b,
-    )?;
+    ).await?;
     
     // 3. Создаем транзакцию с обеими инструкциями
     let mut transaction = Transaction::new_with_payer(
