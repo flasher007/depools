@@ -21,6 +21,7 @@ async-trait = "0.1"
 futures = "0.3"
 spl-token = "4"
 spl-associated-token-account = "2"
+hex = "0.4.3"
 
 [[bin]]
 name = "depools"

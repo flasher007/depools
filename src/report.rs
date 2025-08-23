@@ -155,12 +155,79 @@ mod tests {
             pool_state: PoolState::Active,
         };
         
+        let arbitrage_details = ArbitrageDetails {
+            route_a: RouteDetails {
+                dex: "Test".to_string(),
+                pool_address: "test".to_string(),
+                token_in: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                token_out: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                amount_in: 1000,
+                amount_out: 1000,
+                price: 1.0,
+                fee_bps: 25,
+                fee_amount: 25,
+            },
+            route_b: RouteDetails {
+                dex: "Test".to_string(),
+                pool_address: "test".to_string(),
+                token_in: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                token_out: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                amount_in: 1000,
+                amount_out: 1000,
+                price: 1.0,
+                fee_bps: 25,
+                fee_amount: 25,
+            },
+            fees_breakdown: FeesBreakdown {
+                pool_a_fee: 25,
+                pool_b_fee: 25,
+                priority_fee: 1000,
+                rent: 2039280,
+                total_fees: 2039330,
+            },
+            slippage_protection: SlippageProtection {
+                slippage_bps: 100,
+                min_amount_out_a: 990,
+                min_amount_out_b: 990,
+                slippage_buffer: 10,
+            },
+            execution_plan: ExecutionPlan {
+                instructions_count: 3,
+                estimated_compute_units: 400000,
+                priority_fee_microlamports: 1000,
+                simulate_only: true,
+                recommended_action: "EXECUTE".to_string(),
+                risk_assessment: "Low".to_string(),
+            },
+        };
+
         let report = ArbitrageReport::new(
             true,
-            100,
+            100.0,
             0.5,
             99.5,
             vec![pool_state],
+            arbitrage_details,
         );
         
         assert!(report.profitable);
@@ -203,12 +270,79 @@ mod tests {
             pool_state: PoolState::Active,
         };
         
+        let arbitrage_details = ArbitrageDetails {
+            route_a: RouteDetails {
+                dex: "Test".to_string(),
+                pool_address: "test".to_string(),
+                token_in: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                token_out: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                amount_in: 1000,
+                amount_out: 1000,
+                price: 1.0,
+                fee_bps: 25,
+                fee_amount: 25,
+            },
+            route_b: RouteDetails {
+                dex: "Test".to_string(),
+                pool_address: "test".to_string(),
+                token_in: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                token_out: TokenDetails {
+                    mint: "test".to_string(),
+                    symbol: "TEST".to_string(),
+                    decimals: 6,
+                    amount_ui: 1.0,
+                },
+                amount_in: 1000,
+                amount_out: 1000,
+                price: 1.0,
+                fee_bps: 25,
+                fee_amount: 25,
+            },
+            fees_breakdown: FeesBreakdown {
+                pool_a_fee: 25,
+                pool_b_fee: 25,
+                priority_fee: 1000,
+                rent: 2039280,
+                total_fees: 2039330,
+            },
+            slippage_protection: SlippageProtection {
+                slippage_bps: 100,
+                min_amount_out_a: 990,
+                min_amount_out_b: 990,
+                slippage_buffer: 10,
+            },
+            execution_plan: ExecutionPlan {
+                instructions_count: 3,
+                estimated_compute_units: 400000,
+                priority_fee_microlamports: 1000,
+                simulate_only: true,
+                recommended_action: "EXECUTE".to_string(),
+                risk_assessment: "Low".to_string(),
+            },
+        };
+
         let report = ArbitrageReport::new(
             true,
-            100,
+            100.0,
             0.5,
             99.5,
             vec![pool_state],
+            arbitrage_details,
         );
         
         let json = serde_json::to_string(&report).unwrap();

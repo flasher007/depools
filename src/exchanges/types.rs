@@ -116,6 +116,15 @@ pub struct SwapHop {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PnlBreakdown {
+    pub gross_profit: u64,
+    pub priority_fee: u64,
+    pub rent_fee: u64,
+    pub net_profit: u64,
+    pub is_profitable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbitrageOpportunity {
     pub id: String,
     pub timestamp: u64,
@@ -124,6 +133,9 @@ pub struct ArbitrageOpportunity {
     pub profit_bps: i32,
     pub profit_amount: u64,
     pub risk_score: RiskScore,
+    pub pnl_breakdown: PnlBreakdown,
+    pub min_out_a: u64,
+    pub min_out_b: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

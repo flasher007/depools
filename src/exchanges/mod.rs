@@ -1,30 +1,31 @@
 pub mod raydium_v4;
 pub mod orca_whirlpool;
+pub mod compute_budget;
+pub mod transaction_builder;
+pub mod api_clients; // Новый модуль для API клиентов
 pub mod types;
 pub mod utils;
-pub mod parsers;
+pub mod common;
 
+use async_trait::async_trait;
 use anyhow::Result;
 use solana_sdk::pubkey::Pubkey;
-use crate::exchanges::types::{DexLabel, PoolInfo, SwapQuote};
+use std::any::Any;
+use crate::exchanges::types::{PoolInfo, SwapQuote, DexLabel};
 
-#[async_trait::async_trait]
+#[async_trait]
 pub trait DexAdapter: Send + Sync {
-    fn get_label(&self) -> DexLabel;
-    async fn get_pool_info(&self, pool_address: &Pubkey) -> Result<PoolInfo>;
-    async fn get_swap_quote(&self, pool_address: &Pubkey, amount_in: u64, token_in: &Pubkey) -> Result<SwapQuote>;
-    fn create_swap_instruction(&self, quote: &SwapQuote, user_pubkey: &Pubkey) -> Result<solana_sdk::instruction::Instruction>;
+    async fn get_pool_info(&self, pool_pubkey: &Pubkey) -> Result<PoolInfo>;
+    async fn get_swap_quote(&self, pool_pubkey: &Pubkey, amount_in: u64) -> Result<SwapQuote>;
+    async fn create_swap_instruction(&self, pool_pubkey: &Pubkey, amount_in: u64, min_amount_out: u64) -> Result<solana_sdk::instruction::Instruction>;
+    
+    /// Метод для downcasting к конкретному типу адаптера
+    fn as_any(&self) -> &dyn Any;
 }
 
-pub mod factory {
-    use super::*;
-    use crate::exchanges::{raydium_v4::RaydiumV4Adapter, orca_whirlpool::OrcaWhirlpoolAdapter};
-    use crate::config::Config;
-
-    pub fn create_adapter(dex_label: DexLabel, config: Config) -> Result<Box<dyn DexAdapter>> {
-        match dex_label {
-            DexLabel::RaydiumV4 => Ok(Box::new(RaydiumV4Adapter::new(config)?)),
-            DexLabel::OrcaWhirlpool => Ok(Box::new(OrcaWhirlpoolAdapter::new(config)?)),
-        }
+pub fn create_adapter(dex_label: DexLabel, config: crate::config::Config) -> Result<Box<dyn DexAdapter>> {
+    match dex_label {
+        DexLabel::RaydiumV4 => Ok(Box::new(raydium_v4::adapter::RaydiumV4Adapter::new(config)?)),
+        DexLabel::OrcaWhirlpool => Ok(Box::new(orca_whirlpool::adapter::OrcaWhirlpoolAdapter::new(config)?)),
     }
 }
