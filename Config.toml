@@ -1,50 +1,128 @@
-# Working configuration file for AMM Arbitrage CLI
-# This file demonstrates the configuration format
-# Using Helius RPC for enhanced performance and reliability
+# Depools - Solana Arbitrage Bot v2 Configuration
 
-[rpc]
-url = "https://api.mainnet-beta.solana.com"
+# Bot configuration
+min_profit_threshold = 0.5
+max_slippage = 1.0
+max_gas_price = 1000
+execution_delay_ms = 100
+retry_attempts = 3
 
-[wallet]
-keypair = "test-keypair.json"
+[network]
+# Primary RPC endpoint for Solana mainnet
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=b5939e95-d595-4e01-9401-da85b5c720af"
 
-[tokens]
-# Base token (SOL)
-base_token = { mint = "So11111111111111111111111111111111111111112", symbol = "SOL", decimals = 9 }
-# Quote token (USDC)  
-quote_token = { mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol = "USDC", decimals = 6 }
+# Alternative RPC endpoints (uncomment to use)
+# rpc_url = "https://solana-api.projectserum.com"
+# rpc_url = "https://rpc.ankr.com/solana"
 
-[pools]
-# Pool addresses for the two AMM pools to arbitrage between
-# SOL-USDC on Raydium V4 (Legacy AMM)
-pool_a = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"
-# SOL-USDC on Orca Whirlpool (рабочий пул!)
-pool_b = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"
+# WebSocket endpoint (optional for real-time data)
+ws_url = "wss://mainnet.helius-rpc.com/?api-key=b5939e95-d595-4e01-9401-da85b5c720af"
 
-[trade]
-# Amount to trade in base token (in lamports for SOL)
-amount_in = 1000000000.0
+# Transaction commitment level
+commitment = "confirmed"
 
-# Minimum spread threshold in basis points (1% = 100 bps)
-spread_threshold_bps = 5
+# RPC timeout in milliseconds
+timeout_ms = 30000
 
-# Slippage tolerance in basis points (1% = 100 bps)
-slippage_bps = 100
+# Arbitrage Strategy Settings
+min_profit_threshold = 0.5  # Minimum profit percentage (0.5%)
+max_slippage = 1.0          # Maximum slippage tolerance (1.0%)
 
-# Priority fee in microlamports
-priority_fee_microlamports = 1000
+# Gas and Execution Settings
+max_gas_price = 1000        # Maximum gas price in micro lamports
+execution_delay_ms = 100    # Delay between transactions (ms)
+retry_attempts = 3          # Number of retry attempts for failed transactions
 
-# Whether to only simulate transactions
-simulate_only = true
+# DEX Configuration
+[dex]
+# Enable/disable specific DEXes
+orca_enabled = true
+raydium_enabled = true
+serum_enabled = false
 
-[programs]
-# Program IDs for different AMM types
-raydium_v4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-orca_whirlpool = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
-spl_token = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+# Pool filtering
+min_liquidity_sol = 10.0    # Minimum pool liquidity in SOL
+min_volume_24h_usdc = 1000  # Minimum 24h volume in USDC
 
-[stream]
-# Backend for real-time data (currently only "yellowstone" supported)
-backend = "yellowstone"
-endpoint = "grpc.yellowstone.finance:443"
-x_token = "b5939e95-d595-4e01-9401-da85b5c720af"
+# Risk Management
+[risk]
+max_position_size_sol = 10.0     # Maximum position size in SOL
+max_price_impact_percent = 1.0   # Maximum acceptable price impact
+stop_loss_percent = 5.0          # Stop loss percentage
+
+# Real-time Monitoring
+[monitoring]
+price_update_interval_ms = 1000  # Price update interval
+alert_threshold_percent = 0.5    # Price change alert threshold
+max_price_history = 1000         # Maximum price history to keep
+
+# Yellowstone gRPC Configuration (for real-time data)
+[yellowstone]
+# Enable real-time data streaming
+enabled = false
+
+# Yellowstone gRPC endpoint
+# endpoint = "https://frankfurt.yellowstone-grpc.triton.one"
+
+# Connection settings
+connection_timeout_ms = 10000
+max_retries = 5
+
+# Subscription settings
+[yellowstone.subscriptions]
+# Subscribe to account updates
+accounts = true
+# Subscribe to program updates  
+programs = true
+# Subscribe to slot updates
+slots = false
+# Subscribe to transaction updates
+transactions = false
+
+# Logging Configuration
+[logging]
+level = "info"           # Log level: trace, debug, info, warn, error
+file_path = "depools.log" # Log file path (optional)
+console_output = true    # Enable console output
+
+# Development Settings
+[development]
+# Use devnet for testing
+use_devnet = false
+devnet_rpc_url = "https://api.devnet.solana.com"
+
+# Enable simulation mode (no real transactions)
+simulation_mode = false
+
+# Mock data for testing
+use_mock_data = false
+
+# Fast mode - use demo data instead of real blockchain queries
+fast_mode = false
+
+# Performance Settings
+[performance]
+# Number of concurrent operations
+max_concurrent_requests = 10
+
+# Cache settings
+cache_pool_data_seconds = 60
+cache_token_metadata_seconds = 300
+
+# Rate limiting
+requests_per_second = 100
+
+# Advanced Configuration
+[advanced]
+# Priority fee for transactions (micro lamports)
+priority_fee = 1000
+
+# Compute unit limit for transactions
+compute_unit_limit = 200000
+
+# Enable MEV protection
+mev_protection = true
+
+# Jito bundle configuration
+use_jito_bundles = false
+jito_tip_lamports = 10000

@@ -1,16 +1,20 @@
 # Depools - Solana Arbitrage Bot v2
 
-**🚀 Production-ready Solana arbitrage bot for mainnet with real blockchain integration**
+**Production-ready Solana arbitrage bot for mainnet with real blockchain integration**
 
-[![Rust](https://img.shields.io/badge/Rust-1.70+-blue.svg)](https://rust-lang.org)
-[![Solana](https://img.shields.io/badge/Solana-2.1.14-green.svg)](https://solana.com)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 🚀 Overview
 
-## ✨ Overview
+Depools is a production-ready Solana arbitrage bot that discovers and executes profitable trading opportunities across multiple DEXes on Solana mainnet. Built with Domain-Driven Design principles, it provides real-time monitoring, pool discovery, and arbitrage execution capabilities.
 
-Depools is a **production-ready** Solana arbitrage bot that discovers and executes profitable trading opportunities across multiple DEXes on Solana mainnet. Built with Domain-Driven Design principles, it provides real-time monitoring, pool discovery, and arbitrage execution capabilities.
+## ✨ Features
 
-**🔒 NO MOCKS, NO DEMO DATA, NO TEST CONFIGURATIONS** - This is a real production bot for Solana mainnet.
+- **Real Blockchain Integration**: Direct reading from Solana mainnet
+- **Multi-DEX Support**: Orca Whirlpool, Raydium V4/AMM/CLMM, Meteora DLMM/Pools, PumpSwap, Jupiter
+- **Live Price Monitoring**: Real-time price feeds via Yellowstone gRPC
+- **Pool Discovery**: Automatic discovery of liquidity pools across all supported DEXes
+- **Arbitrage Engine**: Advanced arbitrage detection and execution
+- **Risk Management**: Configurable slippage, profit thresholds, and position limits
+- **Production Ready**: No mocks, demo data, or test configurations
 
 ## 🏗️ Architecture
 
@@ -25,16 +29,6 @@ Depools is a **production-ready** Solana arbitrage bot that discovers and execut
 └─────────────────┘    │ • Price         │    │ • Storage       │
                        └──────────────────┘    └─────────────────┘
 ```
-
-## 🚀 Features
-
-- **Real Blockchain Integration**: Direct reading from Solana mainnet
-- **Multi-DEX Support**: Orca Whirlpool, Raydium V4/AMM/CLMM, Meteora DLMM/Pools, PumpSwap, Jupiter
-- **Live Price Monitoring**: Real-time price feeds via Yellowstone gRPC
-- **Pool Discovery**: Automatic discovery of liquidity pools across all supported DEXes
-- **Arbitrage Engine**: Advanced arbitrage detection and execution
-- **Risk Management**: Configurable slippage, profit thresholds, and position limits
-- **Production Ready**: No mocks, demo data, or test configurations
 
 ## 🚦 Prerequisites
 
@@ -74,6 +68,13 @@ ws_url = "wss://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY"
 # Arbitrage Settings
 min_profit_threshold = 0.5  # Minimum profit percentage
 max_slippage = 1.0          # Maximum slippage tolerance
+
+# Development Settings (MUST be false for production)
+[development]
+use_devnet = false
+simulation_mode = false
+use_mock_data = false
+fast_mode = false
 ```
 
 ### RPC Endpoints
@@ -195,6 +196,9 @@ Token A → Token B [Multiple DEXes] → Token A
 
 Before running in production:
 
+- [ ] `fast_mode = false` in Config.toml
+- [ ] `simulation_mode = false` in Config.toml
+- [ ] `use_mock_data = false` in Config.toml
 - [ ] Mainnet RPC endpoint configured
 - [ ] Proper API keys and rate limits
 - [ ] Risk parameters configured
@@ -258,34 +262,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ---
 
 **⚠️ DISCLAIMER: This bot is for educational and production use. Always test thoroughly and use at your own risk. Cryptocurrency trading involves substantial risk of loss.**
-
-## 🆕 What's New in v2
-
-- **Real Blockchain Integration**: No more mocks or demo data
-- **Production Ready**: Configured for Solana mainnet
-- **Multi-DEX Support**: Support for all major Solana DEXes
-- **Advanced Architecture**: Built with Domain-Driven Design principles
-- **Real-time Monitoring**: Live price feeds and pool discovery
-- **Risk Management**: Comprehensive risk controls and validation
-
-## 🚀 Quick Start
-
-```bash
-# 1. Build the project
-cargo build --release
-
-# 2. Configure your RPC endpoint
-cp Config.toml.example Config.toml
-# Edit Config.toml with your Helius/QuickNode API key
-
-# 3. Test pool discovery
-cargo run -- discover --save
-
-# 4. Start monitoring
-cargo run -- monitor --interval 1000 --threshold 0.1
-
-# 5. Run arbitrage engine
-cargo run -- run-engine --duration 300 --auto-execute
-```
-
-**Ready for production use on Solana mainnet! 🎯**
