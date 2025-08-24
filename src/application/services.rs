@@ -13,6 +13,7 @@ use crate::infrastructure::blockchain::{
     AutoExecutionConfig, 
     OpportunityStatus, 
     RealTransactionExecutor,
+    yellowstone_grpc::YellowstoneGrpcClient,
 };
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signer;
@@ -42,7 +43,7 @@ impl ArbitrageService {
         let pool_discovery = PoolDiscoveryService::new(self.config.network.rpc_url.clone());
         
         // Create profit calculator
-        let profit_calculator = RealProfitCalculator::new();
+        let profit_calculator = RealProfitCalculator::new(self.config.network.rpc_url.clone());
         
         println!("🔍 Discovering pools for arbitrage...");
         
@@ -223,9 +224,8 @@ impl ArbitrageService {
             Ok(metadata) => {
                 println!("✅ Token metadata:");
                 println!("   Symbol: {}", metadata.symbol);
-                println!("   Name: {}", metadata.name.unwrap_or_else(|| "Unknown".to_string()));
+                println!("   Name: {}", metadata.name);
                 println!("   Decimals: {}", metadata.decimals);
-                println!("   Mint: {}", metadata.mint);
             }
             Err(e) => {
                 println!("❌ Failed to read token metadata: {}", e);
@@ -251,23 +251,23 @@ impl ArbitrageService {
         println!("💰 Calculating Arbitrage Profit");
         println!("💵 Amount: {} SOL", amount);
         
-        let profit_calculator = RealProfitCalculator::new();
+        let profit_calculator = RealProfitCalculator::new(self.config.network.rpc_url.clone());
         
         // Create sample pools for demonstration
         let pool_1 = PoolInfo {
             id: "orca_pool_1".to_string(),
             dex_type: DexType::OrcaWhirlpool,
             token_a: Token {
-                mint: Pubkey::new_unique(),
-                symbol: "SOL".to_string(),
-                decimals: 9,
-                name: Some("Solana".to_string()),
+            mint: Pubkey::new_unique(),
+            symbol: "SOL".to_string(),
+            decimals: 9,
+            name: Some("Solana".to_string()),
             },
             token_b: Token {
-                mint: Pubkey::new_unique(),
-                symbol: "USDC".to_string(),
-                decimals: 6,
-                name: Some("USD Coin".to_string()),
+            mint: Pubkey::new_unique(),
+            symbol: "USDC".to_string(),
+            decimals: 6,
+            name: Some("USD Coin".to_string()),
             },
             reserve_a: Amount::new((amount * 1_000_000_000.0) as u64, 9),
             reserve_b: Amount::new(100_000_000, 6), // 100 USDC
@@ -333,7 +333,10 @@ impl ArbitrageService {
                 println!("📊 Found {} total pools", stats.total_pools);
                 
                 // Analyze opportunities across different DEX combinations
-                let dexes = DexRegistry::get_all_dexes();
+                let dexes = DexRegistry::get_all_dexes()
+                    .into_iter()
+                    .filter(|dex| dex.dex_type != DexType::Jupiter) // Skip Jupiter as it's an aggregator, not a DEX with pools
+                    .collect::<Vec<_>>();
                 
                 for i in 0..dexes.len() {
                     for j in (i + 1)..dexes.len() {
@@ -369,9 +372,51 @@ impl ArbitrageService {
         Ok(())
     }
 
-    /// Monitor prices in real-time
+    /// Monitor prices in real-time using Yellowstone gRPC
     pub async fn monitor_realtime_prices(&self, duration: u64) -> Result<(), AppError> {
-        println!("📊 Real-time Price Monitoring");
+        println!("📊 Real-time Price Monitoring via Yellowstone gRPC");
+        println!("⏱️  Duration: {} seconds", duration);
+        
+        // Check if Yellowstone gRPC is enabled
+        if let Some(yellowstone_config) = &self.config.yellowstone {
+            if !yellowstone_config.enabled {
+                println!("⚠️  Yellowstone gRPC is disabled. Using fallback polling mode...");
+                return self.monitor_realtime_prices_fallback(duration).await;
+            }
+            
+            println!("🔗 Starting Yellowstone gRPC monitoring...");
+            println!("   Endpoint: {}", yellowstone_config.endpoint);
+            println!("   DEX Programs: {}", yellowstone_config.dex_programs.len());
+            
+            // Create and start Yellowstone gRPC client
+            let mut yellowstone_client = YellowstoneGrpcClient::new(yellowstone_config.clone());
+            
+            // Start monitoring in background task
+            let monitoring_task = tokio::spawn(async move {
+                match yellowstone_client.start_monitoring().await {
+                    Ok(_) => println!("✅ Yellowstone gRPC monitoring completed successfully"),
+                    Err(e) => eprintln!("❌ Yellowstone gRPC monitoring failed: {}", e),
+                }
+            });
+            
+            // Wait for specified duration
+            tokio::time::sleep(Duration::from_secs(duration)).await;
+            
+            // Cancel monitoring task
+            monitoring_task.abort();
+            println!("✅ Real-time gRPC monitoring completed!");
+            
+        } else {
+            println!("⚠️  No Yellowstone gRPC configuration found. Using fallback polling mode...");
+            return self.monitor_realtime_prices_fallback(duration).await;
+        }
+        
+        Ok(())
+    }
+
+    /// Fallback monitoring using polling (when gRPC is not available)
+    async fn monitor_realtime_prices_fallback(&self, duration: u64) -> Result<(), AppError> {
+        println!("📊 Fallback Price Monitoring (Polling Mode)");
         println!("⏱️  Duration: {} seconds", duration);
         
         let pool_discovery = PoolDiscoveryService::new(self.config.network.rpc_url.clone());
@@ -402,7 +447,7 @@ impl ArbitrageService {
             sleep(Duration::from_secs(5)).await;
         }
         
-        println!("✅ Real-time monitoring completed!");
+        println!("✅ Fallback monitoring completed!");
         Ok(())
     }
 
@@ -413,7 +458,7 @@ impl ArbitrageService {
         println!("🤖 Auto-execute: {}", if auto_execute { "Enabled" } else { "Disabled" });
         
         let pool_discovery = PoolDiscoveryService::new(self.config.network.rpc_url.clone());
-        let profit_calculator = RealProfitCalculator::new();
+        let profit_calculator = RealProfitCalculator::new(self.config.network.rpc_url.clone());
         
         let start_time = std::time::Instant::now();
         let mut opportunities_found = 0;

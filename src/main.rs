@@ -3,7 +3,7 @@
 
 use depools::shared::types::BotConfig;
 use depools::shared::errors::AppError;
-use depools::application::{Cli, CommandExecutor, ConfigService};
+use depools::application::{Cli, CommandExecutor};
 use clap::Parser;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -43,7 +43,18 @@ async fn main() -> Result<(), AppError> {
 }
 
 fn load_config(path: &std::path::PathBuf) -> Result<BotConfig, AppError> {
-    ConfigService::load_config(path)
+    use std::fs;
+    use toml;
+    
+    // Read config file
+    let config_content = fs::read_to_string(path)
+        .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {}", e)))?;
+    
+    // Parse TOML
+    let config: BotConfig = toml::from_str(&config_content)
+        .map_err(|e| AppError::ConfigError(format!("Failed to parse TOML: {}", e)))?;
+        
+    Ok(config)
 }
 
 fn validate_mainnet_config(config: &BotConfig) -> Result<(), AppError> {

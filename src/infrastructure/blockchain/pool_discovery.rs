@@ -10,6 +10,8 @@ use super::account_parser::{OrcaAccountParser, RaydiumAccountParser, AccountPars
 
 use super::vault_reader::VaultReader;
 use super::dex_structures::{Whirlpool, RaydiumV4Pool};
+use solana_account_decoder::UiAccountEncoding;
+use solana_sdk::commitment_config::CommitmentConfig;
 
 /// Pool discovery service
 pub struct PoolDiscoveryService {
@@ -22,18 +24,16 @@ pub struct PoolDiscoveryService {
 impl PoolDiscoveryService {
     /// Create new pool discovery service
     pub fn new(rpc_url: String) -> Self {
+        let vault_reader = VaultReader::new(rpc_url.clone());
         Self {
             rpc_client: SolanaRpcClient::new(rpc_url.clone()),
-            orca_parser: OrcaAccountParser::new(),
+            orca_parser: OrcaAccountParser::new(std::sync::Arc::new(vault_reader.clone())),
             raydium_parser: RaydiumAccountParser::new(),
-            vault_reader: VaultReader::new(rpc_url),
+            vault_reader,
         }
     }
     
-    /// Create new pool discovery service with default mainnet RPC
-    pub fn new() -> Self {
-        Self::new_mainnet()
-    }
+
     
     /// Create with default mainnet RPC
     pub fn new_mainnet() -> Self {
@@ -52,20 +52,71 @@ impl PoolDiscoveryService {
         
         println!("🔍 Discovering {} pools...", dex_type.as_str());
         
-        // Try to get real program accounts with timeout
-        let timeout_duration = tokio::time::Duration::from_secs(10);
-        let rpc_result = tokio::time::timeout(
-            timeout_duration,
-            self.rpc_client.get_program_accounts(&program_id.to_string())
-        ).await;
+        // Try to get real program accounts with timeout and filters
+        let timeout_duration = if dex_type == DexType::RaydiumV4 {
+            tokio::time::Duration::from_secs(5) // Very short timeout for Raydium V4
+        } else {
+            tokio::time::Duration::from_secs(30)
+        };
+        
+        // Add filters to limit results and avoid RPC limits
+        let filters = match dex_type {
+            DexType::OrcaWhirlpool => {
+                // Filter for Orca Whirlpool accounts (size only to avoid RPC limits)
+                vec![
+                    solana_client::rpc_filter::RpcFilterType::DataSize(653), // Whirlpool account size
+                ]
+            },
+            DexType::RaydiumV4 => {
+                // For Raydium V4, use only size filter to avoid RPC errors
+                vec![
+                    solana_client::rpc_filter::RpcFilterType::DataSize(752), // Raydium V4 account size
+                ]
+            },
+            _ => vec![], // No filters for other DEXes
+        };
+        
+        let rpc_result = if dex_type == DexType::RaydiumV4 {
+            // For Raydium V4, skip for now to focus on Orca Whirlpool
+            println!("⚠️  Raydium V4 temporarily disabled - focusing on Orca Whirlpool");
+            return Ok(Vec::new());
+        } else if filters.is_empty() {
+            // Use simple request if no filters
+            tokio::time::timeout(
+                timeout_duration,
+                self.rpc_client.get_program_accounts(&program_id.to_string())
+            ).await
+        } else {
+            // Use filtered request
+            let config = solana_client::rpc_config::RpcProgramAccountsConfig {
+                filters: Some(filters),
+                account_config: solana_client::rpc_config::RpcAccountInfoConfig {
+                    encoding: Some(solana_account_decoder::UiAccountEncoding::Base64),
+                    data_slice: None,
+                    commitment: Some(solana_sdk::commitment_config::CommitmentConfig::confirmed()),
+                    min_context_slot: None,
+                },
+                with_context: None,
+                sort_results: None,
+            };
+            
+            tokio::time::timeout(
+                timeout_duration,
+                self.rpc_client.get_program_accounts_with_config(
+                    &program_id.to_string(),
+                    config
+                )
+            ).await
+        };
         
         match rpc_result {
             Ok(Ok(accounts)) => {
                 println!("✅ Found {} accounts, parsing pools...", accounts.len());
                 let mut pools = Vec::new();
                 
-                // Limit to first 10 accounts for performance
-                let accounts_to_process: Vec<_> = accounts.into_iter().take(10).collect();
+                // Limit accounts for performance (like example bot)
+                let limit = 10;
+                let accounts_to_process: Vec<_> = accounts.into_iter().take(limit).collect();
                 
                 for (pubkey, account_data) in accounts_to_process {
                     // Check if account is a valid pool
@@ -79,7 +130,11 @@ impl PoolDiscoveryService {
                             self.raydium_parser.parse_pool_account_with_balances(&account_data, &self.vault_reader).await
                         } else {
                             // Fallback to legacy parsing
-                            parser.parse_pool_account(&account_data)
+                            if dex_type == DexType::OrcaWhirlpool {
+                                self.orca_parser.parse_pool_account(&account_data).await
+                            } else {
+                                parser.parse_pool_account(&account_data)
+                            }
                         };
                         
                         match pool_result {
@@ -157,7 +212,7 @@ impl PoolDiscoveryService {
         
         // Try to determine DEX type and parse accordingly
         if self.orca_parser.is_pool_account(&account_data) {
-            self.orca_parser.parse_pool_account(&account_data)
+            self.orca_parser.parse_pool_account(&account_data).await
         } else if self.raydium_parser.is_pool_account(&account_data) {
             self.raydium_parser.parse_pool_account(&account_data)
         } else {
@@ -178,7 +233,7 @@ impl PoolDiscoveryService {
     pub async fn get_pool_statistics(&self) -> Result<PoolStatistics, AppError> {
         let mut stats = PoolStatistics::default();
         
-        // Count pools for each DEX
+        // Count pools for each DEX (skip Jupiter as it's an aggregator)
         for dex_type in [DexType::OrcaWhirlpool, DexType::RaydiumV4] {
             match self.discover_dex_pools(dex_type.clone()).await {
                 Ok(pools) => {
@@ -187,10 +242,13 @@ impl PoolDiscoveryService {
                     stats.pools_per_dex.insert(dex_type, count);
                     
                     // Calculate total liquidity
-                    let total_liquidity: u64 = pools.iter()
-                        .map(|pool| pool.liquidity.value)
+                    let total_liquidity: u128 = pools.iter()
+                        .map(|pool| pool.liquidity.value as u128)
                         .sum();
                     stats.total_liquidity += total_liquidity;
+                    
+                    // Store pools for detailed display
+                    stats.pools_by_dex.insert(dex_type, pools);
                 }
                 Err(e) => {
                     eprintln!("Failed to get statistics for {}: {}", dex_type.as_str(), e);
@@ -206,8 +264,9 @@ impl PoolDiscoveryService {
 #[derive(Debug, Default)]
 pub struct PoolStatistics {
     pub total_pools: usize,
-    pub total_liquidity: u64,
+    pub total_liquidity: u128,
     pub pools_per_dex: HashMap<DexType, usize>,
+    pub pools_by_dex: HashMap<DexType, Vec<PoolInfo>>,
 }
 
 impl PoolStatistics {
@@ -218,6 +277,25 @@ impl PoolStatistics {
         println!("   Pools per DEX:");
         for (dex_type, count) in &self.pools_per_dex {
             println!("     {}: {} pools", dex_type.as_str(), count);
+        }
+        
+        // Print detailed pool information
+        println!("\n🔍 Detailed Pool Information:");
+        for (dex_type, pools) in &self.pools_by_dex {
+            if !pools.is_empty() {
+                println!("   {} pools:", dex_type.as_str());
+                for (i, pool) in pools.iter().enumerate().take(5) { // Show first 5 pools
+                    println!("     Pool {}: {} <-> {} (Liquidity: {})", 
+                        i + 1, 
+                        pool.token_a.symbol, 
+                        pool.token_b.symbol, 
+                        pool.liquidity.value
+                    );
+                }
+                if pools.len() > 5 {
+                    println!("     ... and {} more pools", pools.len() - 5);
+                }
+            }
         }
     }
     

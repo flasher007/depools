@@ -64,7 +64,7 @@ impl RealtimePriceMonitor {
     /// Create new price monitor
     pub fn new(
         config: MonitorConfig,
-        yellowstone_config: super::yellowstone_grpc::YellowstoneConfig,
+        yellowstone_config: crate::shared::types::YellowstoneGrpcConfig,
         rpc_url: String,
     ) -> Self {
         Self {
@@ -81,15 +81,22 @@ impl RealtimePriceMonitor {
     pub fn new_default(rpc_url: String) -> Self {
         Self::new(
             MonitorConfig::default(),
-            super::yellowstone_grpc::YellowstoneConfig::default(),
+            crate::shared::types::YellowstoneGrpcConfig {
+                enabled: false,
+                endpoint: "https://solana-yellowstone-grpc.publicnode.com:443".to_string(),
+                token: None,
+                connection_timeout_ms: 10000,
+                max_retries: 5,
+                dex_programs: vec![
+                    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".to_string(), // Orca Whirlpool
+                    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(), // Raydium V4
+                ],
+            },
             rpc_url,
         )
     }
     
-    /// Create with just RPC URL
-    pub fn new(rpc_url: String) -> Self {
-        Self::new_default(rpc_url)
-    }
+
     
     /// Start monitoring
     pub async fn start(&mut self) -> Result<(), AppError> {
@@ -152,7 +159,7 @@ impl RealtimePriceMonitor {
     
     /// Get current price for token
     pub async fn get_current_price(&self, token_mint: &str) -> Result<Option<PriceData>, AppError> {
-        self.yellowstone_client.get_current_price(token_mint).await
+        Ok(self.yellowstone_client.get_current_price(token_mint).await)
     }
     
     /// Get price history for token
@@ -184,9 +191,10 @@ impl RealtimePriceMonitor {
                 let subscriptions = yellowstone_client.get_active_subscriptions().await;
                 
                 for subscription in subscriptions {
-                    if let super::yellowstone_grpc::SubscriptionType::PriceUpdates(token_mint) = subscription.subscription_type {
+                    if subscription.active {
+                let token_mint = subscription.id.clone();
                         // Get current price
-                        if let Ok(Some(price_data)) = yellowstone_client.get_current_price(&token_mint).await {
+                        if let Some(price_data) = yellowstone_client.get_current_price(&token_mint).await {
                             // Update price history
                             {
                                 let mut history = price_history.write().await;
@@ -222,7 +230,7 @@ impl RealtimePriceMonitor {
         
         if let Some(token_history) = history.get(&current_price.token_mint) {
             if let Some(previous_price) = token_history.iter().rev().nth(1) {
-                let price_change = (current_price.price_usd - previous_price.price_usd) / previous_price.price_usd;
+                let price_change = (current_price.price - previous_price.price) / previous_price.price;
                 let change_percentage = price_change.abs() * 100.0;
                 
                 // Check if change exceeds threshold
@@ -236,8 +244,8 @@ impl RealtimePriceMonitor {
                     let alert = PriceAlert {
                         token_mint: current_price.token_mint.clone(),
                         alert_type,
-                        old_price: previous_price.price_usd,
-                        new_price: current_price.price_usd,
+                        old_price: previous_price.price,
+                        new_price: current_price.price,
                         change_percentage,
                         timestamp: chrono::Utc::now(),
                     };
@@ -259,8 +267,8 @@ impl RealtimePriceMonitor {
                         direction, 
                         current_price.token_mint, 
                         change_percentage, 
-                        previous_price.price_usd, 
-                        current_price.price_usd
+                        previous_price.price, 
+                        current_price.price
                     );
                 }
             }

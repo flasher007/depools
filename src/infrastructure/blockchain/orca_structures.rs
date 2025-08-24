@@ -4,11 +4,13 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use solana_sdk::pubkey::Pubkey;
 
 /// Orca Whirlpool account discriminator
-pub const WHIRLPOOL_DISCRIMINATOR: [u8; 8] = [0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b, 0x0b];
+pub const WHIRLPOOL_DISCRIMINATOR: [u8; 8] = [0x3f, 0x95, 0xd1, 0x0c, 0xe1, 0x80, 0x63, 0x09];
 
-/// Orca Whirlpool pool account structure
-#[derive(BorshDeserialize, BorshSerialize, Debug, Clone)]
+/// Orca Whirlpool pool account structure (raw data approach)
+#[derive(Debug, Clone)]
 pub struct Whirlpool {
+    /// Raw account data
+    pub raw_data: Vec<u8>,
     /// Account discriminator
     pub discriminator: [u8; 8],
     /// Nonce used in deriving whirlpool address
@@ -23,44 +25,18 @@ pub struct Whirlpool {
     pub token_vault_a: Pubkey,
     /// Token vault B
     pub token_vault_b: Pubkey,
-    /// Tick array bitmap
-    pub tick_array_bitmap: [u64; 16],
-    /// Fee growth global A
-    pub fee_growth_global_a: u128,
-    /// Fee growth global B
-    pub fee_growth_global_b: u128,
-    /// Protocol fee rate
-    pub protocol_fee_rate: u16,
     /// Fee rate
     pub fee_rate: u16,
+    /// Protocol fee rate
+    pub protocol_fee_rate: u16,
     /// Tick spacing
     pub tick_spacing: u16,
     /// Current sqrt price
     pub sqrt_price: u128,
     /// Current tick index
     pub tick_current_index: i32,
-    /// Observation index
-    pub observation_index: u16,
-    /// Observation cardinality
-    pub observation_cardinality: u16,
-    /// Observation cardinality next
-    pub observation_cardinality_next: u16,
-    /// Maximum observation cardinality
-    pub max_observation_cardinality: u16,
-    /// Protocol fee owed A
-    pub protocol_fee_owed_a: u64,
-    /// Protocol fee owed B
-    pub protocol_fee_owed_b: u64,
     /// Liquidity
     pub liquidity: u128,
-    /// Fee growth checkpoint A
-    pub fee_growth_checkpoint_a: u128,
-    /// Fee growth checkpoint B
-    pub fee_growth_checkpoint_b: u128,
-    /// Reward infos
-    pub reward_infos: [WhirlpoolRewardInfo; 3],
-    /// Whirlpool bump seed
-    pub whirlpool_bump: [u8; 1],
 }
 
 /// Orca Whirlpool reward info
@@ -89,7 +65,7 @@ impl Whirlpool {
         discriminator == WHIRLPOOL_DISCRIMINATOR
     }
     
-    /// Try to deserialize account data into Whirlpool
+    /// Try to deserialize account data into Whirlpool using raw data approach
     pub fn try_deserialize(data: &[u8]) -> Result<Self, borsh::maybestd::io::Error> {
         if !Self::is_valid_whirlpool(data) {
             return Err(borsh::maybestd::io::Error::new(
@@ -98,7 +74,44 @@ impl Whirlpool {
             ));
         }
         
-        BorshDeserialize::try_from_slice(data)
+        if data.len() < 235 {
+            return Err(borsh::maybestd::io::Error::new(
+                borsh::maybestd::io::ErrorKind::InvalidData,
+                "Insufficient data length"
+            ));
+        }
+        
+        // Extract fields from raw data
+        let discriminator: [u8; 8] = data[0..8].try_into().unwrap();
+        let nonce = data[8];
+        let whirlpools_config = Pubkey::new_from_array(data[9..41].try_into().unwrap());
+        let token_mint_a = Pubkey::new_from_array(data[41..73].try_into().unwrap());
+        let token_mint_b = Pubkey::new_from_array(data[73..105].try_into().unwrap());
+        let token_vault_a = Pubkey::new_from_array(data[105..137].try_into().unwrap());
+        let token_vault_b = Pubkey::new_from_array(data[137..169].try_into().unwrap());
+        let fee_rate = u16::from_le_bytes([data[169], data[170]]);
+        let protocol_fee_rate = u16::from_le_bytes([data[171], data[172]]);
+        let tick_spacing = u16::from_le_bytes([data[173], data[174]]);
+        let sqrt_price = u128::from_le_bytes(data[175..191].try_into().unwrap());
+        let tick_current_index = i32::from_le_bytes([data[191], data[192], data[193], data[194]]);
+        let liquidity = u128::from_le_bytes(data[195..211].try_into().unwrap());
+        
+        Ok(Self {
+            raw_data: data.to_vec(),
+            discriminator,
+            nonce,
+            whirlpools_config,
+            token_mint_a,
+            token_mint_b,
+            token_vault_a,
+            token_vault_b,
+            fee_rate,
+            protocol_fee_rate,
+            tick_spacing,
+            sqrt_price,
+            tick_current_index,
+            liquidity,
+        })
     }
     
     /// Get token reserves from vault balances

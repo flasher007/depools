@@ -97,11 +97,7 @@ impl RealtimeArbitrageEngine {
         Self::new(AutoExecutionConfig::default(), price_monitor, rpc_url)
     }
     
-    /// Create with just RPC URL
-    pub fn new(rpc_url: String) -> Self {
-        let price_monitor = RealtimePriceMonitor::new(rpc_url.clone());
-        Self::new_default(price_monitor, rpc_url)
-    }
+
     
     /// Start the arbitrage engine
     pub async fn start(&mut self) -> Result<(), AppError> {

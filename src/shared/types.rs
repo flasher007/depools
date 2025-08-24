@@ -71,10 +71,22 @@ pub struct NetworkConfig {
     pub timeout_ms: u64,
 }
 
+/// Yellowstone gRPC configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YellowstoneGrpcConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub token: Option<String>,
+    pub connection_timeout_ms: u64,
+    pub max_retries: u32,
+    pub dex_programs: Vec<String>, // DEX program IDs to monitor
+}
+
 /// Bot configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotConfig {
     pub network: NetworkConfig,
+    pub yellowstone: Option<YellowstoneGrpcConfig>,
     pub min_profit_threshold: f64,
     pub max_slippage: f64,
     pub max_gas_price: u64,
@@ -91,6 +103,20 @@ impl Default for BotConfig {
                 commitment: "confirmed".to_string(),
                 timeout_ms: 30000,
             },
+                    yellowstone: Some(YellowstoneGrpcConfig {
+            enabled: false,
+            endpoint: "https://solana-yellowstone-grpc.publicnode.com:443".to_string(),
+            token: None,
+            connection_timeout_ms: 10000,
+            max_retries: 5,
+            dex_programs: vec![
+                "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".to_string(), // Orca Whirlpool
+                "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string(), // Raydium V4
+                "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK".to_string(), // Raydium CLMM
+                "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo".to_string(), // Meteora DLMM
+                "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB".to_string(), // Meteora Pools
+            ],
+        }),
             min_profit_threshold: 0.5,
             max_slippage: 1.0,
             max_gas_price: 1000,

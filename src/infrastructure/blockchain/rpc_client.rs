@@ -19,10 +19,7 @@ impl SolanaRpcClient {
         }
     }
     
-    /// Create new RPC client with default mainnet RPC
-    pub fn new() -> Self {
-        Self::new_mainnet()
-    }
+
     
     /// Create default client (mainnet)
     pub fn new_mainnet() -> Self {
@@ -42,6 +39,28 @@ impl SolanaRpcClient {
         // Get all accounts owned by the program
         let accounts = self.client.get_program_accounts(&pubkey)
             .map_err(|e| AppError::BlockchainError(format!("Failed to get program accounts: {}", e)))?;
+            
+        // Convert to our expected format
+        let result: Vec<(Pubkey, Vec<u8>)> = accounts
+            .into_iter()
+            .map(|(pubkey, account)| (pubkey, account.data))
+            .collect();
+            
+        Ok(result)
+    }
+    
+    /// Get program accounts with configuration and filters
+    pub async fn get_program_accounts_with_config(
+        &self, 
+        program_id: &str,
+        config: solana_client::rpc_config::RpcProgramAccountsConfig
+    ) -> Result<Vec<(Pubkey, Vec<u8>)>, AppError> {
+        let pubkey = Pubkey::from_str(program_id)
+            .map_err(|e| AppError::BlockchainError(format!("Invalid program ID: {}", e)))?;
+            
+        // Get accounts with config
+        let accounts = self.client.get_program_accounts_with_config(&pubkey, config)
+            .map_err(|e| AppError::BlockchainError(format!("Failed to get program accounts with config: {}", e)))?;
             
         // Convert to our expected format
         let result: Vec<(Pubkey, Vec<u8>)> = accounts

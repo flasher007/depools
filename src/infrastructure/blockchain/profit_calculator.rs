@@ -20,10 +20,7 @@ impl RealProfitCalculator {
         }
     }
     
-    /// Create new profit calculator with default mainnet RPC
-    pub fn new() -> Self {
-        Self::new_mainnet()
-    }
+
     
     /// Create with default mainnet RPC
     pub fn new_mainnet() -> Self {
@@ -246,7 +243,7 @@ impl RealProfitCalculator {
         );
         
         Ok(ProfitCalculation {
-            input_amount: optimal_amount,
+            input_amount: optimal_amount.clone(),
             intermediate_amount: Amount::new(intermediate_amount, pool_1.token_b.decimals),
             output_amount: Amount::new(output_amount, optimal_amount.decimals),
             gross_profit,
