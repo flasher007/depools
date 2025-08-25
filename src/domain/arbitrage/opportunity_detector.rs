@@ -8,6 +8,79 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{info, warn, debug, error};
 
+/// Индекс пула в графе
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PoolIndex(pub usize);
+
+/// Индекс токена в графе
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TokenIndex(pub usize);
+
+/// Информация о пуле для арбитража
+#[derive(Debug, Clone)]
+pub struct PoolQuote {
+    pub pool_id: String,
+    pub dex_type: DexType,
+    pub token_a: String,
+    pub token_b: String,
+    pub price_a_to_b: f64,
+    pub price_b_to_a: f64,
+    pub liquidity: Amount,
+    pub fee: Amount,
+}
+
+impl PoolQuote {
+    pub fn get_name(&self) -> String {
+        format!("{}_{}", self.dex_type.as_str(), self.pool_id)
+    }
+    
+    /// Получить котировку для обмена amount_in токена in на токен out
+    pub fn get_quote_with_amounts_scaled(
+        &self,
+        amount_in: u64,
+        mint_in: &str,
+        mint_out: &str,
+    ) -> u64 {
+        if mint_in == self.token_a && mint_out == self.token_b {
+            // A -> B
+            (amount_in as f64 * self.price_a_to_b) as u64
+        } else if mint_in == self.token_b && mint_out == self.token_a {
+            // B -> A
+            (amount_in as f64 * self.price_b_to_a) as u64
+        } else {
+            0 // Неправильная пара токенов
+        }
+    }
+}
+
+/// Граф пулов для поиска арбитража
+#[derive(Debug, Clone)]
+pub struct PoolGraph(pub HashMap<TokenIndex, HashMap<TokenIndex, Vec<PoolQuote>>>);
+
+impl PoolGraph {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+    
+    /// Добавить пул в граф
+    pub fn add_pool(&mut self, token_a: usize, token_b: usize, pool: PoolQuote) {
+        self.0.entry(TokenIndex(token_a)).or_insert_with(HashMap::new)
+            .entry(TokenIndex(token_b)).or_insert_with(Vec::new)
+            .push(pool.clone());
+            
+        // Добавляем обратное направление
+        self.0.entry(TokenIndex(token_b)).or_insert_with(HashMap::new)
+            .entry(TokenIndex(token_a)).or_insert_with(Vec::new)
+            .push(pool);
+    }
+    
+    /// Получить все пулы между двумя токенами
+    pub fn get_pools(&self, token_a: usize, token_b: usize) -> Option<&Vec<PoolQuote>> {
+        self.0.get(&TokenIndex(token_a))
+            .and_then(|edges| edges.get(&TokenIndex(token_b)))
+    }
+}
+
 /// Информация о цене токена
 #[derive(Debug, Clone)]
 pub struct PriceData {
@@ -65,18 +138,35 @@ pub struct ProfitCalculation {
 }
 
 /// Детектор арбитражных возможностей
+#[derive(Clone)]
 pub struct ArbitrageOpportunityDetector {
     min_profit_threshold: f64,
     min_liquidity: Amount,
-    price_cache: Arc<RwLock<HashMap<String, PriceData>>>,
+    price_cache: Arc<RwLock<HashMap<String, Vec<PriceData>>>>,
     max_route_length: usize,
     risk_tolerance: f64,
     token_metadata: Arc<TokenMetadataService>,
     max_slippage: f64, // Максимальное допустимое проскальзывание
     min_confidence_score: f64, // Минимальная уверенность в расчетах
+    
+    // Новые поля для графа пулов
+    pool_graph: PoolGraph,
+    token_mints: Vec<String>,
+    token_to_index: HashMap<String, usize>,
 }
 
 impl ArbitrageOpportunityDetector {
+    /// Создать с настройками по умолчанию
+    pub fn new_default(token_metadata: Arc<TokenMetadataService>) -> Self {
+        Self::new(
+            0.001, // 0.1% минимальная прибыль (было 0.5%)
+            Amount::new(1000000000, 9), // 1 SOL минимальная ликвидность
+            4, // Максимум 4 шага в маршруте
+            0.5, // Высокий риск (было 0.3)
+            token_metadata,
+        )
+    }
+    
     /// Создать новый детектор
     pub fn new(
         min_profit_threshold: f64,
@@ -94,89 +184,54 @@ impl ArbitrageOpportunityDetector {
             token_metadata,
             max_slippage: 0.10, // 10% максимальное проскальзывание (было 5%)
             min_confidence_score: 0.4, // 40% минимальная уверенность (было 70%)
+            
+            // Новые поля для графа пулов
+            pool_graph: PoolGraph::new(),
+            token_mints: Vec::new(),
+            token_to_index: HashMap::new(),
         }
-    }
-
-    /// Создать с настройками по умолчанию
-    pub fn new_default(token_metadata: Arc<TokenMetadataService>) -> Self {
-        Self::new(
-            0.001, // 0.1% минимальная прибыль (было 0.5%)
-            Amount::new(1000000000, 9), // 1 SOL минимальная ликвидность
-            4, // Максимум 4 шага в маршруте
-            0.5, // Высокий риск (было 0.3)
-            token_metadata,
-        )
     }
 
     /// Поиск арбитражных маршрутов с улучшенными алгоритмами
     pub async fn find_arbitrage_routes(&self, price_data: &[PriceData]) -> Vec<ArbitrageRoute> {
         info!("🔍 Поиск арбитражных маршрутов...");
         
-        let mut routes = Vec::new();
-        let mut processed_pairs: HashSet<String> = HashSet::new();
-
-        // Группируем цены по токенам
-        let mut token_prices: HashMap<String, Vec<&PriceData>> = HashMap::new();
+        // Сначала обновляем кэш цен
         for price in price_data {
-            token_prices.entry(price.token_mint.clone()).or_insert_with(Vec::new).push(price);
+            self.update_price_cache(price.clone()).await;
         }
-
-        info!("📊 Анализируем {} токенов с ценами", token_prices.len());
-
-        // Ищем арбитражные возможности для каждого токена
-        let mut total_pairs_checked = 0;
-        let mut profitable_pairs_found = 0;
         
-        for (token_mint, prices) in &token_prices {
-            if prices.len() < 2 {
-                debug!("⏭️  Токен {}: недостаточно DEX ({}), пропускаем", token_mint, prices.len());
-                continue; // Нужно минимум 2 DEX для арбитража
-            }
-
-            info!("🔍 Анализируем токен {}: {} DEX найдено", token_mint, prices.len());
-            
-            // Сортируем цены по убыванию
-            let mut sorted_prices: Vec<_> = prices.iter().collect();
-            sorted_prices.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
-
-            // Показываем диапазон цен
-            let highest_price = sorted_prices[0];
-            let lowest_price = sorted_prices[sorted_prices.len() - 1];
-            let price_spread = ((highest_price.price - lowest_price.price) / lowest_price.price) * 100.0;
-            
-            info!("   💰 Диапазон цен: {:.6} - {:.6} (спред: {:.2}%)", 
-                lowest_price.price, highest_price.price, price_spread);
-
-            // Ищем Two-Hop арбитраж (A -> B -> A)
-            if let Some(route) = self.find_two_hop_arbitrage(token_mint, &sorted_prices.iter().map(|&&p| p).collect::<Vec<_>>()).await {
-                routes.push(route);
-                profitable_pairs_found += 1;
-                info!("   ✅ Two-Hop арбитраж найден!");
-            } else {
-                debug!("   ❌ Two-Hop арбитраж не найден");
-            }
-
-            // Ищем Triangle арбитраж (A -> B -> C -> A)
-            if let Some(route) = self.find_triangle_arbitrage(token_mint, &sorted_prices.iter().map(|&&p| p).collect::<Vec<_>>(), &token_prices).await {
-                routes.push(route);
-                profitable_pairs_found += 1;
-                info!("   ✅ Triangle арбитраж найден!");
-            } else {
-                debug!("   ❌ Triangle арбитраж не найден");
-            }
-
-            // Ищем Multi-Hop арбитраж (A -> B -> C -> D -> A)
-            if let Some(route) = self.find_multi_hop_arbitrage(token_mint, &sorted_prices.iter().map(|&&p| p).collect::<Vec<_>>(), &token_prices).await {
-                routes.push(route);
-                profitable_pairs_found += 1;
-                info!("   ✅ Multi-Hop арбитраж найден!");
-            } else {
-                debug!("   ❌ Multi-Hop арбитраж не найден");
-            }
-
-            total_pairs_checked += 1;
+        // Строим граф пулов из обновленного кэша
+        let mut detector = self.clone();
+        detector.build_pool_graph().await;
+        
+        if detector.token_mints.is_empty() {
+            info!("⚠️ Граф пулов не построен, пропускаем поиск");
+            return Vec::new();
         }
-
+        
+        let mut routes = Vec::new();
+        let mut sent_arbs = HashSet::new();
+        
+        // Ищем арбитраж для каждого токена как стартовой точки
+        for start_mint_idx in 0..detector.token_mints.len() {
+            let init_balance = 1000000000u64; // 1 SOL в lamports
+            
+            detector.brute_force_search(
+                start_mint_idx,
+                init_balance,
+                init_balance,
+                vec![start_mint_idx],
+                Vec::new(),
+                &mut sent_arbs,
+                &mut routes,
+            );
+        }
+        
+        info!("📊 Статистика поиска:");
+        info!("   Всего токенов в графе: {}", detector.token_mints.len());
+        info!("   Найдено маршрутов: {}", routes.len());
+        
         // Фильтруем по прибыльности, риску и уверенности
         let initial_count = routes.len();
         routes.retain(|route| {
@@ -199,162 +254,185 @@ impl ArbitrageOpportunityDetector {
             
             profitable && risk_acceptable && confident
         });
-
-        // Показываем краткую статистику только если есть что показать
-        if total_pairs_checked > 0 {
-            if profitable_pairs_found > 0 {
-                info!("📊 Найдено {} прибыльных пар из {} проверенных токенов", profitable_pairs_found, total_pairs_checked);
-            } else {
-                info!("📊 Проверено {} токенов, прибыльных пар не найдено", total_pairs_checked);
-            }
-        }
-
+        
+        info!("   Маршрутов после фильтрации: {} (было: {})", routes.len(), initial_count);
+        info!("   Фильтры: прибыль ≥{:.2}%, риск ≤{:.2}, уверенность ≥{:.2}", 
+            self.min_profit_threshold * 100.0, self.risk_tolerance, self.min_confidence_score);
         info!("✅ Найдено {} арбитражных маршрутов", routes.len());
+        
         routes
     }
-
-    /// Поиск Two-Hop арбитража (A -> B -> A) с улучшенными расчетами
-    async fn find_two_hop_arbitrage(
+    
+    /// Brute force поиск арбитража (по примеру рабочего кода)
+    fn brute_force_search(
         &self,
-        token_mint: &str,
-        prices: &[&PriceData],
-    ) -> Option<ArbitrageRoute> {
-        if prices.len() < 2 {
-            return None;
+        start_mint_idx: usize,
+        init_balance: u64,
+        curr_balance: u64,
+        path: Vec<usize>,
+        pool_path: Vec<PoolQuote>,
+        sent_arbs: &mut HashSet<String>,
+        routes: &mut Vec<ArbitrageRoute>,
+    ) {
+        let src_curr = path[path.len() - 1]; // последний токен в пути
+        let src_mint = &self.token_mints[src_curr];
+        
+        // Максимум 3 шага для 2 DEX
+        if path.len() >= 4 {
+            return;
         }
-
-        // Ищем арбитраж между разными токенами, а не внутри одного
-        // Например: SOL -> USDC -> SOL через разные DEX
         
-        // Получаем все доступные токены для арбитража
-        let available_tokens = self.get_available_trading_pairs(token_mint).await;
-        
-        for (other_token, other_prices) in available_tokens {
-            if other_prices.len() < 2 {
-                continue;
-            }
-            
-            // Ищем лучшие цены для обмена token_mint <-> other_token
-            let best_buy_other = other_prices.iter()
-                .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))?;
-            let best_sell_other = other_prices.iter()
-                .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))?;
+        // Ищем все возможные переходы из текущего токена
+        if let Some(edges) = self.pool_graph.0.get(&TokenIndex(src_curr)) {
+            for (dst_mint_idx, pools) in edges {
+                let dst_mint_idx = dst_mint_idx.0;
+                let dst_mint = &self.token_mints[dst_mint_idx];
                 
-            // Проверяем, что это разные DEX
-            if best_buy_other.dex_type == best_sell_other.dex_type {
-                continue;
+                // Пропускаем, если токен уже в пути (кроме возврата к началу)
+                if path.contains(&dst_mint_idx) && dst_mint_idx != start_mint_idx {
+                    continue;
+                }
+                
+                // Выбираем лучший пул для перехода
+                if let Some(best_pool) = pools.iter().min_by(|a, b| {
+                    a.price_a_to_b.partial_cmp(&b.price_a_to_b).unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    let new_balance = best_pool.get_quote_with_amounts_scaled(
+                        curr_balance,
+                        src_mint,
+                        dst_mint,
+                    );
+                    
+                    let mut new_path = path.clone();
+                    new_path.push(dst_mint_idx);
+                    
+                    let mut new_pool_path = pool_path.clone();
+                    new_pool_path.push(best_pool.clone());
+                    
+                    // Проверяем, вернулись ли к начальному токену (арбитраж!)
+                    if dst_mint_idx == start_mint_idx && new_path.len() >= 3 {
+                        if new_balance > init_balance {
+                            // Нашли прибыльный арбитраж!
+                            let profit = new_balance - init_balance;
+                            let profit_percentage = profit as f64 / init_balance as f64;
+                            
+                            // Создаем уникальный ключ для арбитража
+                            let mint_keys: Vec<String> = new_path.iter().map(|i| i.to_string()).collect();
+                            let pool_keys: Vec<String> = new_pool_path.iter().map(|p| p.get_name()).collect();
+                            let arb_key = format!("{}_{}", mint_keys.join("->"), pool_keys.join("->"));
+                            
+                            if !sent_arbs.contains(&arb_key) {
+                                sent_arbs.insert(arb_key);
+                                
+                                info!("🎯 Найден арбитраж: {} -> {} (прибыль: {:.2}%)", 
+                                    init_balance, new_balance, profit_percentage * 100.0);
+                                
+                                // Создаем маршрут арбитража
+                                if let Some(route) = self.create_arbitrage_route(
+                                    &new_path,
+                                    &new_pool_path,
+                                    profit_percentage,
+                                    init_balance,
+                                    new_balance,
+                                ) {
+                                    routes.push(route);
+                                }
+                            }
+                        }
+                    } else {
+                        // Продолжаем поиск
+                        self.brute_force_search(
+                            start_mint_idx,
+                            init_balance,
+                            new_balance,
+                            new_path,
+                            new_pool_path,
+                            sent_arbs,
+                            routes,
+                        );
+                    }
+                }
             }
-            
-            // Рассчитываем прибыльность арбитража
-            let base_amount = 1000000000u64; // 1 SOL в lamports
-            
-            // SOL -> USDC (покупаем USDC за SOL)
-            let usdc_amount = (base_amount as f64 / best_buy_other.price) as u64;
-            
-            // USDC -> SOL (продаем USDC за SOL)
-            let sol_final = (usdc_amount as f64 * best_sell_other.price) as u64;
-            
-            let profit = if sol_final > base_amount {
-                sol_final - base_amount
-            } else {
-                continue; // Убыточно
-            };
-            
-            let profit_percentage = profit as f64 / base_amount as f64;
-            
-            if profit_percentage < self.min_profit_threshold {
-                continue;
-            }
-            
-            // Получаем метаданные токенов
-            let sol_metadata = match self.token_metadata.get_token_metadata(token_mint).await {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            
-            let usdc_metadata = match self.token_metadata.get_token_metadata(&other_token).await {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            
-            // Рассчитываем реальные суммы с учетом проскальзывания
-            let amount_in = Amount::new(base_amount, 9);
-            let slippage_estimate = self.calculate_slippage_estimate(amount_in.value, best_buy_other.liquidity.value);
-            let effective_price = best_buy_other.price * (1.0 - slippage_estimate);
-            let expected_amount_out = Amount::new((base_amount as f64 * effective_price) as u64, 9);
-            
-            // Рассчитываем комиссии
-            let fee_estimate = self.calculate_fee_estimate(&best_buy_other.dex_type, amount_in.value);
-            let gas_estimate = self.calculate_gas_estimate(&best_buy_other.dex_type);
-            
-            // Создаем маршрут
-            let route = ArbitrageRoute {
-                id: format!("two_hop_{}_{}_{}_{}", 
-                    sol_metadata.symbol, 
-                    usdc_metadata.symbol,
-                    best_buy_other.dex_type.as_str(), 
-                    best_sell_other.dex_type.as_str()),
-                steps: vec![
-                    ArbitrageStep {
-                        dex_type: best_buy_other.dex_type.clone(),
-                        pool_id: best_buy_other.pool_id.clone(),
-                        token_in: Token {
-                            mint: solana_sdk::pubkey::Pubkey::try_from(token_mint.as_bytes()).unwrap_or_default(),
-                            symbol: sol_metadata.symbol.clone(),
-                            decimals: sol_metadata.decimals,
-                            name: Some(sol_metadata.name.clone()),
-                        },
-                        token_out: Token {
-                            mint: solana_sdk::pubkey::Pubkey::try_from(other_token.as_bytes()).unwrap_or_default(),
-                            symbol: usdc_metadata.symbol.clone(),
-                            decimals: usdc_metadata.decimals,
-                            name: Some(usdc_metadata.name.clone()),
-                        },
-                        amount_in: amount_in.clone(),
-                        expected_amount_out: expected_amount_out.clone(),
-                        price_impact: slippage_estimate,
-                        fee: fee_estimate.clone(),
-                        slippage_estimate,
-                        gas_estimate: gas_estimate.clone(),
-                    },
-                    ArbitrageStep {
-                        dex_type: best_sell_other.dex_type.clone(),
-                        pool_id: best_sell_other.pool_id.clone(),
-                        token_in: Token {
-                            mint: solana_sdk::pubkey::Pubkey::try_from(other_token.as_bytes()).unwrap_or_default(),
-                            symbol: usdc_metadata.symbol.clone(),
-                            decimals: usdc_metadata.decimals,
-                            name: Some(usdc_metadata.name.clone()),
-                        },
-                        token_out: Token {
-                            mint: solana_sdk::pubkey::Pubkey::try_from(token_mint.as_bytes()).unwrap_or_default(),
-                            symbol: sol_metadata.symbol.clone(),
-                            decimals: sol_metadata.decimals,
-                            name: Some(sol_metadata.name.clone()),
-                        },
-                        amount_in: expected_amount_out.clone(),
-                        expected_amount_out: amount_in.clone(),
-                        price_impact: slippage_estimate,
-                        fee: fee_estimate.clone(),
-                        slippage_estimate,
-                        gas_estimate: gas_estimate.clone(),
-                    },
-                ],
-                expected_profit: profit as f64 / 1_000_000_000.0, // Конвертируем в SOL
-                total_cost: Amount::new(fee_estimate.value + gas_estimate.value, 9),
-                profit_percentage,
-                risk_score: self.calculate_risk_score(profit_percentage, slippage_estimate),
-                confidence_score: self.calculate_confidence_score(profit_percentage, slippage_estimate),
-                execution_time_estimate: std::time::Duration::from_millis(500),
-                timestamp: std::time::Instant::now(),
-            };
-            
-            return Some(route);
         }
-        
-        None
     }
     
+    /// Создать маршрут арбитража из найденного пути
+    fn create_arbitrage_route(
+        &self,
+        path: &[usize],
+        pool_path: &[PoolQuote],
+        profit_percentage: f64,
+        init_balance: u64,
+        final_balance: u64,
+    ) -> Option<ArbitrageRoute> {
+        if path.len() < 3 || pool_path.len() < 2 {
+            return None;
+        }
+        
+        let mut steps = Vec::new();
+        let mut current_balance = init_balance;
+        
+        // Создаем шаги арбитража
+        for i in 0..pool_path.len() {
+            let pool = &pool_path[i];
+            let token_in_idx = path[i];
+            let token_out_idx = path[i + 1];
+            
+            let token_in_mint = &self.token_mints[token_in_idx];
+            let token_out_mint = &self.token_mints[token_out_idx];
+            
+            let amount_out = pool.get_quote_with_amounts_scaled(
+                current_balance,
+                token_in_mint,
+                token_out_mint,
+            );
+            
+            let step = ArbitrageStep {
+                dex_type: pool.dex_type.clone(),
+                pool_id: pool.pool_id.clone(),
+                token_in: Token {
+                    mint: solana_sdk::pubkey::Pubkey::try_from(token_in_mint.as_bytes()).unwrap_or_default(),
+                    symbol: token_in_mint.clone(), // Временно используем mint как symbol
+                    decimals: 9,
+                    name: Some(token_in_mint.clone()),
+                },
+                token_out: Token {
+                    mint: solana_sdk::pubkey::Pubkey::try_from(token_out_mint.as_bytes()).unwrap_or_default(),
+                    symbol: token_out_mint.clone(),
+                    decimals: 9,
+                    name: Some(token_out_mint.clone()),
+                },
+                amount_in: Amount::new(current_balance, 9),
+                expected_amount_out: Amount::new(amount_out, 9),
+                price_impact: 0.001,
+                fee: pool.fee.clone(),
+                slippage_estimate: 0.001,
+                gas_estimate: Amount::new(5000000, 9),
+            };
+            
+            steps.push(step);
+            current_balance = amount_out;
+        }
+        
+        // Создаем маршрут
+        let route = ArbitrageRoute {
+            id: format!("arb_{}_{}_{}", 
+                self.token_mints[path[0]], 
+                self.token_mints[path[1]], 
+                self.token_mints[path[0]]),
+            steps,
+            expected_profit: (final_balance - init_balance) as f64 / 1_000_000_000.0,
+            total_cost: Amount::new(10000000, 9), // Примерная стоимость
+            profit_percentage,
+            risk_score: self.calculate_risk_score(profit_percentage, 0.001),
+            confidence_score: self.calculate_confidence_score(profit_percentage, 0.001),
+            execution_time_estimate: std::time::Duration::from_millis(500),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        Some(route)
+    }
+
     /// Получить доступные торговые пары для токена
     async fn get_available_trading_pairs(&self, base_token: &str) -> HashMap<String, Vec<PriceData>> {
         // В реальной системе здесь нужно получить все доступные пары
@@ -706,11 +784,11 @@ impl ArbitrageOpportunityDetector {
     /// Обновить кэш цен с дополнительной информацией
     pub async fn update_price_cache(&self, price_data: PriceData) {
         let mut cache = self.price_cache.write().await;
-        cache.insert(price_data.token_mint.clone(), price_data);
+        cache.entry(price_data.token_mint.clone()).or_insert_with(Vec::new).push(price_data);
     }
 
     /// Получить кэш цен
-    pub async fn get_price_cache(&self) -> HashMap<String, PriceData> {
+    pub async fn get_price_cache(&self) -> HashMap<String, Vec<PriceData>> {
         self.price_cache.read().await.clone()
     }
 
@@ -718,7 +796,7 @@ impl ArbitrageOpportunityDetector {
     pub async fn cleanup_stale_prices(&self, max_age: Duration) {
         let mut cache = self.price_cache.write().await;
         let now = Instant::now();
-        cache.retain(|_, price| now.duration_since(price.timestamp) <= max_age);
+        cache.retain(|_, prices| prices.iter().all(|p| now.duration_since(p.timestamp) <= max_age));
     }
 
     /// Получить статистику кэша цен
@@ -726,11 +804,86 @@ impl ArbitrageOpportunityDetector {
         let cache = self.price_cache.read().await;
         let size = cache.len();
         let oldest_timestamp = cache.values()
+            .flat_map(|prices| prices.iter())
             .map(|p| p.timestamp)
             .min()
             .unwrap_or(Instant::now());
         let age = Instant::now().duration_since(oldest_timestamp);
         (size, age)
+    }
+
+    /// Построить граф пулов из кэша цен
+    pub async fn build_pool_graph(&mut self) {
+        let cache = self.price_cache.read().await;
+        let mut graph = PoolGraph::new();
+        let mut token_mints = Vec::new();
+        let mut token_to_index = HashMap::new();
+        
+        // Собираем все уникальные токены
+        for (token_mint, prices) in cache.iter() {
+            if !token_to_index.contains_key(token_mint) {
+                token_to_index.insert(token_mint.clone(), token_mints.len());
+                token_mints.push(token_mint.clone());
+            }
+        }
+        
+        // Строим граф пулов
+        for (token_mint, prices) in cache.iter() {
+            let token_a_idx = *token_to_index.get(token_mint).unwrap();
+            
+            // Группируем цены по DEX для поиска арбитража
+            let mut dex_prices: HashMap<DexType, Vec<&PriceData>> = HashMap::new();
+            for price in prices {
+                dex_prices.entry(price.dex_type.clone()).or_insert_with(Vec::new).push(price);
+            }
+            
+            // Ищем другие токены для создания пулов
+            for (other_mint, other_prices) in cache.iter() {
+                if token_mint == other_mint {
+                    continue; // Пропускаем тот же токен
+                }
+                
+                let token_b_idx = *token_to_index.get(other_mint).unwrap();
+                
+                // Создаем пул между токенами
+                for (dex_type, dex_price_list) in dex_prices.iter() {
+                    if let Some(price_data) = dex_price_list.first() {
+                        let pool_quote = PoolQuote {
+                            pool_id: price_data.pool_id.clone(),
+                            dex_type: dex_type.clone(),
+                            token_a: token_mint.clone(),
+                            token_b: other_mint.clone(),
+                            price_a_to_b: price_data.price,
+                            price_b_to_a: 1.0 / price_data.price, // Обратная цена
+                            liquidity: price_data.liquidity.clone(),
+                            fee: Amount::new(5000000, 9), // Примерная комиссия
+                        };
+                        
+                        graph.add_pool(token_a_idx, token_b_idx, pool_quote);
+                    }
+                }
+            }
+        }
+        
+        // Обновляем поля
+        self.pool_graph = graph;
+        self.token_mints = token_mints;
+        self.token_to_index = token_to_index;
+        
+        info!("🏗️ Построен граф пулов: {} токенов, {} пулов", 
+            self.token_mints.len(), 
+            self.count_total_pools());
+    }
+    
+    /// Подсчитать общее количество пулов в графе
+    fn count_total_pools(&self) -> usize {
+        let mut total = 0;
+        for edges in self.pool_graph.0.values() {
+            for pools in edges.values() {
+                total += pools.len();
+            }
+        }
+        total
     }
 }
 
@@ -743,7 +896,7 @@ mod tests {
     async fn test_find_two_hop_arbitrage() {
         let rpc_client = Arc::new(solana_client::rpc_client::RpcClient::new("".to_string()));
         let token_metadata = Arc::new(TokenMetadataService::new(rpc_client));
-        let detector = ArbitrageOpportunityDetector::new_default(token_metadata);
+        let mut detector = ArbitrageOpportunityDetector::new_default(token_metadata);
         
         let price_data = vec![
             PriceData {
@@ -767,6 +920,10 @@ mod tests {
                 price_change_24h: Some(0.01),
             },
         ];
+
+        detector.update_price_cache(price_data[0].clone()).await;
+        detector.update_price_cache(price_data[1].clone()).await;
+        detector.build_pool_graph().await;
 
         let routes = detector.find_arbitrage_routes(&price_data).await;
         assert!(!routes.is_empty());

@@ -192,79 +192,88 @@ impl ArbitrageMonitor {
 
     /// Запустить основной цикл мониторинга
     pub async fn run_monitoring_loop(&mut self) -> Result<(), AppError> {
-        info!("🚀 Запуск арбитражного монитора...");
-        info!("📊 Конфигурация:");
-        info!("   Минимальная прибыль: {:.2}%", self.config.min_profit_threshold * 100.0);
-        info!("   Минимальная ликвидность: {} SOL", self.config.min_liquidity);
-        info!("   Интервал обновления: {}ms", self.config.update_interval_ms);
-        info!("   Максимум одновременных сделок: {}", self.config.max_concurrent_trades);
-        info!("   Толерантность к риску: {:.1}", self.config.risk_tolerance);
-        info!("   Автоматическое исполнение: {}", if self.config.enable_auto_execution { "ВКЛ" } else { "ВЫКЛ" });
-        info!("   Начальный баланс: {} SOL", self.config.initial_balance_sol);
-
-        // Подключаемся к gRPC
-        self.grpc_client.connect().await?;
-        info!("✅ Подключение к gRPC установлено");
-
-        // Основной цикл мониторинга
-        let mut last_update = Instant::now();
-        let update_interval = Duration::from_millis(self.config.update_interval_ms);
-
+        info!("🚀 Запуск цикла мониторинга арбитража...");
+        
+        // Создаем тестовые данные для проверки
+        self.create_test_pools().await;
+        
+        let start_time = std::time::Instant::now();
+        let mut last_stats_print = start_time;
+        
         loop {
-            let now = Instant::now();
+            let cycle_start = std::time::Instant::now();
+            
+            // Выполняем цикл мониторинга
+            self.perform_monitoring_cycle().await?;
             
             // Обновляем статистику
             {
                 let mut stats = self.stats.write().await;
-                stats.update();
-                
-                // Обновляем текущий баланс
-                let current_balance = self.arbitrage_executor.get_current_balance().await;
-                stats.current_balance_sol = current_balance.value as f64 / 1_000_000_000.0;
+                stats.transactions_processed += 1;
+                stats.last_update = std::time::Instant::now();
             }
-
-            // Проверяем, нужно ли обновление
-            if now.duration_since(last_update) >= update_interval {
-                if let Err(e) = self.perform_monitoring_cycle().await {
-                    error!("⚠️ Ошибка в цикле мониторинга: {}", e);
-                }
-                last_update = now;
+            
+            // Показываем статистику каждые 30 секунд
+            if cycle_start.duration_since(last_stats_print).as_secs() >= 30 {
+                self.print_monitor_stats().await;
+                last_stats_print = cycle_start;
             }
-
-            // Небольшая пауза между итерациями
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            
+            // Ждем до следующего цикла
+            let cycle_duration = cycle_start.elapsed();
+            if cycle_duration < std::time::Duration::from_millis(self.config.update_interval_ms) {
+                let sleep_duration = std::time::Duration::from_millis(self.config.update_interval_ms) - cycle_duration;
+                tokio::time::sleep(sleep_duration).await;
+            }
         }
     }
 
     /// Выполнить один цикл мониторинга
     async fn perform_monitoring_cycle(&mut self) -> Result<(), AppError> {
-        // 1. Получаем актуальные цены из кэша
-        let price_data = self.get_current_price_data().await?;
+        // Ищем арбитражные возможности в тестовых данных
+        let test_price_data = vec![
+            // SOL -> USDC на Orca
+            PriceData {
+                token_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+                dex_type: crate::domain::dex::DexType::OrcaWhirlpool,
+                pool_id: "orca_sol_usdc_test".to_string(),
+                price: 0.00098, // 1 SOL = 98 USDC
+                liquidity: crate::shared::types::Amount::new(1000000000000, 9), // 1000 SOL
+                volume_24h: Some(1000000.0),
+                price_change_24h: Some(0.01),
+                timestamp: std::time::Instant::now(),
+            },
+            // SOL -> USDC на Raydium
+            PriceData {
+                token_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+                dex_type: crate::domain::dex::DexType::RaydiumAMM,
+                pool_id: "raydium_sol_usdc_test".to_string(),
+                price: 0.00100, // 1 SOL = 100 USDC
+                liquidity: crate::shared::types::Amount::new(800000000000, 9), // 800 SOL
+                volume_24h: Some(800000.0),
+                price_change_24h: Some(0.02),
+                timestamp: std::time::Instant::now(),
+            },
+        ];
         
-        // 2. Ищем арбитражные возможности
-        let opportunities = self.opportunity_detector.find_arbitrage_routes(&price_data).await;
+        // Ищем арбитражные маршруты
+        let routes = self.opportunity_detector.find_arbitrage_routes(&test_price_data).await;
         
-        // 3. Обновляем статистику
+        // Обновляем статистику
         {
             let mut stats = self.stats.write().await;
-            stats.opportunities_found += opportunities.len() as u64;
+            stats.opportunities_found += routes.len() as u64;
         }
-
-        // 4. Обрабатываем найденные возможности
-        for opportunity in opportunities {
-            if let Err(e) = self.process_arbitrage_opportunity(opportunity).await {
-                error!("⚠️ Ошибка обработки возможности: {}", e);
+        
+        // Обрабатываем найденные возможности
+        for route in routes {
+            info!("🎯 Обрабатываем арбитражную возможность: {}", route.id);
+            
+            if let Err(e) = self.process_arbitrage_opportunity(route).await {
+                error!("❌ Ошибка обработки арбитража: {}", e);
             }
         }
-
-        // 5. Выводим статистику каждые 100 циклов
-        {
-            let stats = self.stats.read().await;
-            if stats.transactions_processed % 100 == 0 {
-                self.print_monitor_stats().await;
-            }
-        }
-
+        
         Ok(())
     }
 
@@ -316,6 +325,69 @@ impl ArbitrageMonitor {
         }
 
         price_data
+    }
+
+    /// Создать тестовые данные для проверки арбитража
+    async fn create_test_pools(&self) {
+        info!("🧪 Создание тестовых пулов для проверки арбитража...");
+        
+        // SOL -> USDC на Orca
+        let sol_usdc_orca = PriceData {
+            token_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+            dex_type: crate::domain::dex::DexType::OrcaWhirlpool,
+            pool_id: "orca_sol_usdc_test".to_string(),
+            price: 0.00098, // 1 SOL = 98 USDC
+            liquidity: crate::shared::types::Amount::new(1000000000000, 9), // 1000 SOL
+            volume_24h: Some(1000000.0),
+            price_change_24h: Some(0.01),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        // SOL -> USDC на Raydium
+        let sol_usdc_raydium = PriceData {
+            token_mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+            dex_type: crate::domain::dex::DexType::RaydiumAMM,
+            pool_id: "raydium_sol_usdc_test".to_string(),
+            price: 0.00100, // 1 SOL = 100 USDC (немного дороже)
+            liquidity: crate::shared::types::Amount::new(800000000000, 9), // 800 SOL
+            volume_24h: Some(800000.0),
+            price_change_24h: Some(0.02),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        // USDC -> SOL на Orca (обратная цена)
+        let usdc_sol_orca = PriceData {
+            token_mint: "111111111111111111111111111111111111111111111111111111111111111111".to_string(), // SOL
+            dex_type: crate::domain::dex::DexType::OrcaWhirlpool,
+            pool_id: "orca_usdc_sol_test".to_string(),
+            price: 1.0 / 0.00098, // 1 USDC = 1/98 SOL
+            liquidity: crate::shared::types::Amount::new(98000000000, 6), // 98M USDC
+            volume_24h: Some(1000000.0),
+            price_change_24h: Some(0.01),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        // USDC -> SOL на Raydium (обратная цена)
+        let usdc_sol_raydium = PriceData {
+            token_mint: "111111111111111111111111111111111111111111111111111111111111111111".to_string(), // SOL
+            dex_type: crate::domain::dex::DexType::RaydiumAMM,
+            pool_id: "raydium_usdc_sol_test".to_string(),
+            price: 1.0 / 0.00100, // 1 USDC = 1/100 SOL
+            liquidity: crate::shared::types::Amount::new(100000000000, 6), // 100M USDC
+            volume_24h: Some(800000.0),
+            price_change_24h: Some(0.02),
+            timestamp: std::time::Instant::now(),
+        };
+        
+        // Добавляем в детектор
+        self.opportunity_detector.update_price_cache(sol_usdc_orca).await;
+        self.opportunity_detector.update_price_cache(sol_usdc_raydium).await;
+        self.opportunity_detector.update_price_cache(usdc_sol_orca).await;
+        self.opportunity_detector.update_price_cache(usdc_sol_raydium).await;
+        
+        info!("✅ Создано 4 тестовых пула: SOL↔USDC на Orca и Raydium");
+        info!("   💰 Цены: Orca: 1 SOL = 98 USDC, Raydium: 1 SOL = 100 USDC");
+        info!("   🎯 Ожидаемый арбитраж: SOL → USDC на Orca → USDC → SOL на Raydium");
     }
 
     /// Обработать найденную арбитражную возможность
