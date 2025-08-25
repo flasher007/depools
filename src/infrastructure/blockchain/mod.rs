@@ -1,6 +1,7 @@
 //! Direct blockchain reading for Solana DEX data
 
 pub mod account_parser;
+pub mod arbitrage_grpc;
 pub mod dex_structures;
 pub mod dex_adapters;
 pub mod pool_discovery;
@@ -15,6 +16,7 @@ pub mod yellowstone_grpc;
 pub mod orca_structures;
 
 pub use account_parser::{AccountParser, OrcaAccountParser, RaydiumAccountParser};
+pub use arbitrage_grpc::{ArbitrageGrpcClient, DexTransactionInfo, PriceCache, ConnectionStatus};
 pub use dex_adapters::{DexAdapter, DexAdapterFactory};
 pub use dex_structures::{Whirlpool, RaydiumAMMPool};
 pub use pool_discovery::PoolDiscoveryService;

@@ -6,6 +6,9 @@ use crate::shared::errors::AppError;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use solana_sdk::account::Account;
+use solana_sdk::commitment_config::CommitmentConfig;
+use std::str::FromStr;
 
 /// Token metadata from Solana Token Metadata Program
 #[derive(Debug, Clone)]
@@ -16,14 +19,17 @@ pub struct TokenMetadata {
     pub decimals: u8,
     pub uri: Option<String>,
     pub logo_uri: Option<String>,
+    pub verified: bool,
+    pub last_updated: chrono::DateTime<chrono::Utc>,
 }
 
-/// Enhanced token metadata service
+/// Enhanced token metadata service with real blockchain integration
 #[derive(Clone)]
 pub struct TokenMetadataService {
     rpc_client: Arc<RpcClient>,
     cache: Arc<RwLock<HashMap<String, TokenMetadata>>>,
     known_tokens: HashMap<String, TokenMetadata>,
+    cache_ttl: std::time::Duration,
 }
 
 impl TokenMetadataService {
@@ -33,14 +39,31 @@ impl TokenMetadataService {
         
         // Add known tokens with their metadata
         known_tokens.insert(
-            "So11111111111111111111111111111111111111112".to_string(),
+            "So111111111111111111111111111111111111111111111111111111111111111111".to_string(),
             TokenMetadata {
-                mint: "So11111111111111111111111111111111111111112".to_string(),
+                mint: "So111111111111111111111111111111111111111111111111111111111111111111".to_string(),
                 symbol: "SOL".to_string(),
                 name: "Wrapped SOL".to_string(),
                 decimals: 9,
                 uri: None,
                 logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
+            },
+        );
+        
+        // Add system tokens
+        known_tokens.insert(
+            "111111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            TokenMetadata {
+                mint: "111111111111111111111111111111111111111111111111111111111111111111".to_string(),
+                symbol: "SOL".to_string(),
+                name: "Native SOL".to_string(),
+                decimals: 9,
+                uri: None,
+                logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
         
@@ -53,6 +76,8 @@ impl TokenMetadataService {
                 decimals: 6,
                 uri: None,
                 logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
         
@@ -65,6 +90,8 @@ impl TokenMetadataService {
                 decimals: 6,
                 uri: None,
                 logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
         
@@ -77,6 +104,8 @@ impl TokenMetadataService {
                 decimals: 9,
                 uri: None,
                 logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
         
@@ -89,6 +118,8 @@ impl TokenMetadataService {
                 decimals: 9,
                 uri: None,
                 logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
         
@@ -101,368 +132,8 @@ impl TokenMetadataService {
                 decimals: 5,
                 uri: None,
                 logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr".to_string(),
-            TokenMetadata {
-                mint: "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr".to_string(),
-                symbol: "POPCAT".to_string(),
-                name: "Popcat".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU".to_string(),
-            TokenMetadata {
-                mint: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU".to_string(),
-                symbol: "SAMO".to_string(),
-                name: "Samoyedcoin".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "AFbX8oGjGpmVFywbVouvhQSRmiW2aR1mohfahi4Y2AdB".to_string(),
-            TokenMetadata {
-                mint: "AFbX8oGjGpmVFywbVouvhQSRmiW2aR1mohfahi4Y2AdB".to_string(),
-                symbol: "GST".to_string(),
-                name: "Green Satoshi Token".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "7i5KKsX2weiTkry7jA4ZwSuXGhs5eJBEjY8vVxR4mRx4".to_string(),
-            TokenMetadata {
-                mint: "7i5KKsX2weiTkry7jA4ZwSuXGhs5eJBEjY8vVxR4mRx4".to_string(),
-                symbol: "GMT".to_string(),
-                name: "Green Metaverse Token".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "HZ1JovNiVvGrGNiiYvEozEVg58WUyVHfUNfVwYzqJm8o".to_string(),
-            TokenMetadata {
-                mint: "HZ1JovNiVvGrGNiiYvEozEVg58WUyVHfUNfVwYzqJm8o".to_string(),
-                symbol: "RAY".to_string(),
-                name: "Raydium".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R".to_string(),
-            TokenMetadata {
-                mint: "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R".to_string(),
-                symbol: "RAY".to_string(),
-                name: "Raydium".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E".to_string(),
-            TokenMetadata {
-                mint: "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E".to_string(),
-                symbol: "SOLAPE".to_string(),
-                name: "Solape".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "5jFnsfx36DyGk8uVGrbXnVUMTsBkPXGpx6e69BiGFzko".to_string(),
-            TokenMetadata {
-                mint: "5jFnsfx36DyGk8uVGrbXnVUMTsBkPXGpx6e69BiGFzko".to_string(),
-                symbol: "STEP".to_string(),
-                name: "STEP".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs".to_string(),
-            TokenMetadata {
-                mint: "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs".to_string(),
-                symbol: "ETH".to_string(),
-                name: "Ether (Portal)".to_string(),
-                decimals: 8,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "2FPyTwvZ6ny3kFLvz2iECr4UqGJgfQkgHLb4UivLqMkj".to_string(),
-            TokenMetadata {
-                mint: "2FPyTwvZ6ny3kFLvz2iECr4UqGJgfQkgHLb4UivLqMkj".to_string(),
-                symbol: "BTC".to_string(),
-                name: "Bitcoin (Portal)".to_string(),
-                decimals: 8,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        // Add tokens found in Orca pools
-        known_tokens.insert(
-            "1111111116GUSSWBXctW2MLfx58vm756SyT1WrE1T".to_string(),
-            TokenMetadata {
-                mint: "1111111116GUSSWBXctW2MLfx58vm756SyT1WrE1T".to_string(),
-                symbol: "SOL".to_string(),
-                name: "Wrapped SOL (Orca)".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-        
-        known_tokens.insert(
-            "11111111JTVonvhkBK8ivT4zK9KqLgu4EeixUAbaE".to_string(),
-            TokenMetadata {
-                mint: "11111111JTVonvhkBK8ivT4zK9KqLgu4EeixUAbaE".to_string(),
-                symbol: "SOL".to_string(),
-                name: "Wrapped SOL (Orca 2)".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "111111111626fV6WXXVwSWQiiZrLLL9dofjT85LHw".to_string(),
-            TokenMetadata {
-                mint: "111111111626fV6WXXVwSWQiiZrLLL9dofjT85LHw".to_string(),
-                symbol: "SOL".to_string(),
-                name: "Wrapped SOL (Orca 3)".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        // Add specific tokens found in our pool discovery
-        known_tokens.insert(
-            "9cfDMZ1kSED24ZND2eXSr2BJ7RoHPAGUXE7Nj2m3Tz1N".to_string(),
-            TokenMetadata {
-                mint: "9cfDMZ1kSED24ZND2eXSr2BJ7RoHPAGUXE7Nj2m3Tz1WrE1T".to_string(),
-                symbol: "BONK".to_string(),
-                name: "Bonk".to_string(),
-                decimals: 5,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "1tJC1RBe19iM4Gdu4e1yMuiEYQzNZaFoMbNVLGkeGq".to_string(),
-            TokenMetadata {
-                mint: "1tJC1RBe19iM4Gdu4e1yMuiEYQzNZaFoMbNVLGkeGq".to_string(),
-                symbol: "POPCAT".to_string(),
-                name: "Popcat".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9kUtLXNQ8GrfoBriLAQUs52CvR7NNAApgT7LFFcJb4rJ".to_string(),
-            TokenMetadata {
-                mint: "9kUtLXNQ8GrfoBriLAQUs52CvR7NNAApgT7LFFcJb4rJ".to_string(),
-                symbol: "SAMO".to_string(),
-                name: "Samoyedcoin".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2VPwwLgtrKef".to_string(),
-            TokenMetadata {
-                mint: "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2VPwwLgtrKef".to_string(),
-                symbol: "GST".to_string(),
-                name: "Green Satoshi Token".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9cfdPy4ek6F1ezpRrp4c1gKUtJdtLHxsXFEr8staRWzE".to_string(),
-            TokenMetadata {
-                mint: "9cfdPy4ek6F1ezpRrp4c1gKUtJdtLHxsXFEr8staRWzE".to_string(),
-                symbol: "GMT".to_string(),
-                name: "Green Metaverse Token".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "Hxo3ge6qsAivE4giQuce77nN4o3krVSNJcxvCnTxQnEA".to_string(),
-            TokenMetadata {
-                mint: "Hxo3ge6qsAivE4giQuce77nN4o3krVSNJcxvCnTxQnEA".to_string(),
-                symbol: "RAY".to_string(),
-                name: "Raydium".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "5Jq6aXvEZ4SuQHibGEwxfDb3xhhWK9VbbTFZZR4Y2dKL".to_string(),
-            TokenMetadata {
-                mint: "5Jq6aXvEZ4SuQHibGEwxfDb3xhhWK9VbbTFZZR4Y2dKL".to_string(),
-                symbol: "STEP".to_string(),
-                name: "Step".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9ecRaYV9vPK9kawmWAwWzGJfCf6KU1sNTnSh7koswgaC".to_string(),
-            TokenMetadata {
-                mint: "9ecRaYV9vPK9kawmWAwWzGJfCf6KU1sNTnSh7koswgaC".to_string(),
-                symbol: "SOLAPE".to_string(),
-                name: "Solape".to_string(),
-                decimals: 9,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "3trXoJCdRxJ6Tg781ci2hnSGwAgfD9LZFYNf9NLaCQPx".to_string(),
-            TokenMetadata {
-                mint: "3trXoJCdRxJ6Tg781ci2hnSGwAgfD9LZFYNf9NLaCQPx".to_string(),
-                symbol: "ETH".to_string(),
-                name: "Wrapped ETH (Sollet)".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2RrMXa7hBK3R".to_string(),
-            TokenMetadata {
-                mint: "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2RrMXa7hBK3R".to_string(),
-                symbol: "BTC".to_string(),
-                name: "Wrapped BTC (Sollet)".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "6vsDgmpKHrw8pnfAdEADFpXuD3u6DhmPLjZvKvqXaaLW".to_string(),
-            TokenMetadata {
-                mint: "6vsDgmpKHrw8pnfAdEADFpXuD3u6DhmPLjZvKvqXaaLW".to_string(),
-                symbol: "USDT".to_string(),
-                name: "Tether USD (Sollet)".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "4uQr8ovPMEkrxiYtV4vFUvnyJhTjZWdY7dJMoY2D6bV".to_string(),
-            TokenMetadata {
-                mint: "4uQr8ovPMEkrxiYtV4vFUvnyJhTjZWdY7dJMoY2D6bV".to_string(),
-                symbol: "USDC".to_string(),
-                name: "USD Coin (Sollet)".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9Qxr73jyf6P425nc6J9PduV9iQMs8EwwMgfFvvN9SPzE".to_string(),
-            TokenMetadata {
-                mint: "9Qxr73jyf6P425nc6J9PduV9iQMs8EwwMgfFvvN9SPzE".to_string(),
-                symbol: "SRM".to_string(),
-                name: "Serum".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9ecqKXTHT4wvV6W8zgpnFsPFVnX1Fe6z8xKgRM4PdFTQ".to_string(),
-            TokenMetadata {
-                mint: "9ecqKXTHT4wvV6W8zgpnFsPFVnX1Fe6z8xKgRM4PdFTQ".to_string(),
-                symbol: "ORCA".to_string(),
-                name: "Orca".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "8DqqdXpi9MXVJKreZzN1KMtTUKQKRirv7csTjTP3AToy".to_string(),
-            TokenMetadata {
-                mint: "8DqqdXpi9MXVJKreZzN1KMtTUKQKRirv7csTjTP3AToy".to_string(),
-                symbol: "MNGO".to_string(),
-                name: "Mango".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2X7oxdXn1BPE".to_string(),
-            TokenMetadata {
-                mint: "9cfdPy4ek6EfNSCneLsXG6BRo6mZMJwd2X7oxdXn1BPE".to_string(),
-                symbol: "FIDA".to_string(),
-                name: "Bonfida".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
-            },
-        );
-
-        known_tokens.insert(
-            "8phb8VbjFVVMMyYUgxFh5mS6fg9cvKeQwtbLxJPUDmx".to_string(),
-            TokenMetadata {
-                mint: "8phb8VbjFVVMMyYUgxFh5mS6fg9cvKeQwtbLxJPUDmx".to_string(),
-                symbol: "COPE".to_string(),
-                name: "Cope".to_string(),
-                decimals: 6,
-                uri: None,
-                logo_uri: None,
+                verified: true,
+                last_updated: chrono::Utc::now(),
             },
         );
 
@@ -470,16 +141,20 @@ impl TokenMetadataService {
             rpc_client,
             cache: Arc::new(RwLock::new(HashMap::new())),
             known_tokens,
+            cache_ttl: std::time::Duration::from_secs(3600), // 1 hour TTL
         }
     }
 
-    /// Get token metadata by mint address
+    /// Get token metadata by mint address with enhanced caching
     pub async fn get_token_metadata(&self, mint: &str) -> Result<TokenMetadata, AppError> {
         // Check cache first
         {
             let cache = self.cache.read().await;
             if let Some(metadata) = cache.get(mint) {
-                return Ok(metadata.clone());
+                // Check if cache is still valid
+                if chrono::Utc::now() - metadata.last_updated < chrono::Duration::from_std(self.cache_ttl).unwrap() {
+                    return Ok(metadata.clone());
+                }
             }
         }
 
@@ -500,40 +175,180 @@ impl TokenMetadataService {
                 Ok(metadata)
             }
             Err(_) => {
-                // Fallback to generating a readable name
-                let fallback_metadata = self.generate_fallback_metadata(mint);
-                
-                // Cache the fallback result
-                let mut cache = self.cache.write().await;
-                cache.insert(mint.to_string(), fallback_metadata.clone());
-                
-                Ok(fallback_metadata)
+                // Try to fetch basic token info from SPL Token Program
+                match self.fetch_basic_token_info(mint).await {
+                    Ok(metadata) => {
+                        // Cache the result
+                        let mut cache = self.cache.write().await;
+                        cache.insert(mint.to_string(), metadata.clone());
+                        Ok(metadata)
+                    }
+                    Err(_) => {
+                        // Fallback to generating a readable name
+                        let fallback_metadata = self.generate_fallback_metadata(mint);
+                        
+                        // Cache the fallback result
+                        let mut cache = self.cache.write().await;
+                        cache.insert(mint.to_string(), fallback_metadata.clone());
+                        
+                        Ok(fallback_metadata)
+                    }
+                }
             }
         }
     }
 
-    /// Fetch token metadata from Solana blockchain
+    /// Fetch token metadata from Solana Token Metadata Program
     async fn fetch_token_metadata_from_chain(&self, mint: &str) -> Result<TokenMetadata, AppError> {
-        // This is a simplified implementation
-        // In production, you would:
-        // 1. Find the Metadata PDA for the mint
-        // 2. Deserialize the metadata account data
-        // 3. Extract symbol, name, decimals, etc.
+        // Token Metadata Program ID
+        let metadata_program_id = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
         
-        // For now, return an error to trigger fallback
-        Err(AppError::BlockchainError("Token metadata not found on chain".to_string()))
+        // Find the Metadata PDA for the mint
+        let mint_pubkey = Pubkey::from_str(mint)
+            .map_err(|e| AppError::BlockchainError(format!("Invalid mint address: {}", e)))?;
+        
+        let metadata_program_pubkey = Pubkey::from_str(metadata_program_id)
+            .map_err(|e| AppError::BlockchainError(format!("Invalid metadata program ID: {}", e)))?;
+        
+        // Derive metadata account address
+        let (metadata_account, _) = Pubkey::find_program_address(
+            &[
+                b"metadata",
+                metadata_program_pubkey.as_ref(),
+                mint_pubkey.as_ref(),
+            ],
+            &metadata_program_pubkey,
+        );
+
+        // Fetch metadata account
+        let account = self.rpc_client
+            .get_account_with_commitment(&metadata_account, CommitmentConfig::confirmed())
+            .map_err(|e| AppError::BlockchainError(format!("Failed to fetch metadata account: {}", e)))?
+            .value
+            .ok_or_else(|| AppError::BlockchainError("Metadata account not found".to_string()))?;
+
+        // Parse metadata (simplified - in production you'd use proper deserialization)
+        let metadata = self.parse_metadata_account(&account.data)?;
+        
+        Ok(metadata)
     }
 
-    /// Generate fallback metadata when on-chain data is not available
-    fn generate_fallback_metadata(&self, mint: &str) -> TokenMetadata {
-        // Try to extract meaningful information from the mint address
-        let symbol = if mint.len() >= 8 {
-            // Use first 8 characters as symbol
-            format!("TOKEN_{}", &mint[..8].to_uppercase())
+    /// Fetch basic token info from SPL Token Program
+    async fn fetch_basic_token_info(&self, mint: &str) -> Result<TokenMetadata, AppError> {
+        let mint_pubkey = Pubkey::from_str(mint)
+            .map_err(|e| AppError::BlockchainError(format!("Invalid mint address: {}", e)))?;
+
+        // Fetch mint account
+        let account = self.rpc_client
+            .get_account_with_commitment(&mint_pubkey, CommitmentConfig::confirmed())
+            .map_err(|e| AppError::BlockchainError(format!("Failed to fetch mint account: {}", e)))?
+            .value
+            .ok_or_else(|| AppError::BlockchainError("Mint account not found".to_string()))?;
+
+        // Parse mint account data
+        let decimals = if account.data.len() >= 45 {
+            account.data[44] // decimals field in SPL Token mint account
+        } else {
+            6 // fallback
+        };
+
+        // Try to get symbol from mint address (common pattern)
+        let symbol = self.extract_symbol_from_mint(mint);
+
+        Ok(TokenMetadata {
+            mint: mint.to_string(),
+            symbol,
+            name: format!("Token {}", &mint[..8]),
+            decimals,
+            uri: None,
+            logo_uri: None,
+            verified: false,
+            last_updated: chrono::Utc::now(),
+        })
+    }
+
+    /// Parse metadata account data
+    fn parse_metadata_account(&self, data: &[u8]) -> Result<TokenMetadata, AppError> {
+        // This is a simplified parser for Token Metadata Program
+        // In production, you'd use proper Anchor or Borsh deserialization
+        
+        if data.len() < 1 {
+            return Err(AppError::BlockchainError("Invalid metadata account data".to_string()));
+        }
+
+        // Extract basic info (this is a simplified version)
+        let symbol = if data.len() >= 9 {
+            let symbol_len = data[8] as usize;
+            if data.len() >= 9 + symbol_len {
+                String::from_utf8_lossy(&data[9..9+symbol_len]).to_string()
+            } else {
+                "UNKNOWN".to_string()
+            }
         } else {
             "UNKNOWN".to_string()
         };
 
+        let name = if data.len() >= 9 + symbol.len() + 1 {
+            let name_len = data[9 + symbol.len()] as usize;
+            if data.len() >= 9 + symbol.len() + 1 + name_len {
+                String::from_utf8_lossy(&data[9 + symbol.len() + 1..9 + symbol.len() + 1 + name_len]).to_string()
+            } else {
+                format!("Token {}", symbol)
+            }
+        } else {
+            format!("Token {}", symbol)
+        };
+
+        Ok(TokenMetadata {
+            mint: "".to_string(), // Will be set by caller
+            symbol,
+            name,
+            decimals: 6, // Default
+            uri: None,
+            logo_uri: None,
+            verified: true,
+            last_updated: chrono::Utc::now(),
+        })
+    }
+
+    /// Extract symbol from mint address using common patterns
+    fn extract_symbol_from_mint(&self, mint: &str) -> String {
+        // Handle system tokens first
+        if mint == "111111111111111111111111111111111111111111111111111111111111111111" {
+            return "SOL".to_string();
+        }
+        
+        // Common token patterns
+        if mint.len() >= 8 {
+            let prefix = &mint[..8];
+            
+            // Check for known patterns
+            match prefix {
+                "EPjFWdd" => "USDC".to_string(),
+                "Es9vMFr" => "USDT".to_string(),
+                "So11111" => "SOL".to_string(),
+                "mSoLzYC" => "mSOL".to_string(),
+                "7dHbWXm" => "stSOL".to_string(),
+                "DezXAZ8" => "BONK".to_string(),
+                "11111111" => "SOL".to_string(), // System token prefix
+                _ => {
+                    // Try to extract a meaningful symbol from the mint
+                    if mint.len() >= 12 {
+                        let short_prefix = &mint[..12];
+                        format!("TOKEN_{}", short_prefix.to_uppercase())
+                    } else {
+                        format!("TOKEN_{}", prefix.to_uppercase())
+                    }
+                }
+            }
+        } else {
+            "UNKNOWN".to_string()
+        }
+    }
+
+    /// Generate fallback metadata when on-chain data is not available
+    fn generate_fallback_metadata(&self, mint: &str) -> TokenMetadata {
+        let symbol = self.extract_symbol_from_mint(mint);
         let name = if mint.len() >= 8 {
             format!("Token {}", &mint[..8])
         } else {
@@ -547,6 +362,8 @@ impl TokenMetadataService {
             decimals: 6, // Default to 6 decimals
             uri: None,
             logo_uri: None,
+            verified: false,
+            last_updated: chrono::Utc::now(),
         }
     }
 
@@ -566,5 +383,55 @@ impl TokenMetadataService {
     pub async fn get_cache_size(&self) -> usize {
         let cache = self.cache.read().await;
         cache.len()
+    }
+
+    /// Refresh token metadata from blockchain
+    pub async fn refresh_token_metadata(&self, mint: &str) -> Result<TokenMetadata, AppError> {
+        // Remove from cache to force refresh
+        {
+            let mut cache = self.cache.write().await;
+            cache.remove(mint);
+        }
+        
+        // Fetch fresh data
+        self.get_token_metadata(mint).await
+    }
+
+    /// Batch fetch multiple token metadata
+    pub async fn batch_get_token_metadata(&self, mints: &[String]) -> Result<Vec<TokenMetadata>, AppError> {
+        let mut results = Vec::new();
+        
+        for mint in mints {
+            match self.get_token_metadata(mint).await {
+                Ok(metadata) => results.push(metadata),
+                Err(e) => {
+                    // Log error but continue with other tokens
+                    eprintln!("Failed to fetch metadata for {}: {}", mint, e);
+                    // Add fallback metadata
+                    results.push(self.generate_fallback_metadata(mint));
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+
+    /// Get token symbol with fallback
+    pub async fn get_token_symbol(&self, mint: &str) -> String {
+        match self.get_token_metadata(mint).await {
+            Ok(metadata) => metadata.symbol,
+            Err(_) => self.extract_symbol_from_mint(mint),
+        }
+    }
+
+    /// Get token name with fallback
+    pub async fn get_token_name(&self, mint: &str) -> String {
+        match self.get_token_metadata(mint).await {
+            Ok(metadata) => metadata.name,
+            Err(_) => {
+                let symbol = self.extract_symbol_from_mint(mint);
+                format!("Token {}", symbol)
+            }
+        }
     }
 }

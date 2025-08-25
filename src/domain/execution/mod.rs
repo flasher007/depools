@@ -3,10 +3,12 @@
 mod transaction_executor;
 mod transaction_builder;
 mod transaction_validator;
+mod arbitrage_executor;
 
 pub use transaction_executor::TransactionExecutor;
 pub use transaction_builder::TransactionBuilder;
 pub use transaction_validator::TransactionValidator;
+pub use arbitrage_executor::{ArbitrageTransactionExecutor, RiskManagementConfig, ActiveTrade, DailyStats, TradeStatus};
 
 use crate::shared::types::{Amount, Token};
 use crate::shared::errors::ExecutionError;

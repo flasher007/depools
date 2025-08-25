@@ -1,83 +1,34 @@
 //! Depools - Solana Arbitrage Bot v2
 //! Main entry point for production use on Solana mainnet
 
-use depools::shared::types::BotConfig;
-use depools::shared::errors::AppError;
-use depools::application::{Cli, CommandExecutor};
 use clap::Parser;
-use tracing_subscriber::{fmt, EnvFilter};
+use depools::application::{Cli, CommandExecutor};
+use depools::shared::config::ConfigLoader;
+use depools::shared::errors::AppError;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    // Initialize logging with proper configuration
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    
-    fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
+    // Initialize logging
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "depools=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
         .init();
-    
-    println!("🚀 Depools - Solana Arbitrage Bot v2");
-    println!("🌐 Connecting to Solana mainnet...");
-    
+
+    // Parse CLI arguments
     let cli = Cli::parse();
     
     // Load configuration
-    let config = load_config(&cli.config)?;
+    let config = ConfigLoader::load_config()?;
     
-    // Validate configuration for mainnet
-    validate_mainnet_config(&config)?;
+    tracing::info!("🚀 Solana DEX Pool Discovery and Arbitrage Bot v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("📁 Конфигурация загружена из: {}", config.network.rpc_url);
     
-    println!("✅ Configuration loaded successfully");
-    println!("🔗 RPC Endpoint: {}", config.network.rpc_url);
-    println!("💰 Min Profit Threshold: {}%", config.min_profit_threshold);
-    println!("⚠️  Max Slippage: {}%", config.max_slippage);
-    
-    // Execute command using the production architecture
-    CommandExecutor::execute(&cli.command, &config).await?;
-    
-    Ok(())
-}
-
-fn load_config(path: &std::path::PathBuf) -> Result<BotConfig, AppError> {
-    use std::fs;
-    use toml;
-    
-    // Read config file
-    let config_content = fs::read_to_string(path)
-        .map_err(|e| AppError::ConfigError(format!("Failed to read config file: {}", e)))?;
-    
-    // Parse TOML
-    let config: BotConfig = toml::from_str(&config_content)
-        .map_err(|e| AppError::ConfigError(format!("Failed to parse TOML: {}", e)))?;
-        
-    Ok(config)
-}
-
-fn validate_mainnet_config(config: &BotConfig) -> Result<(), AppError> {
-    // Ensure we're using mainnet RPC
-    if config.network.rpc_url.contains("devnet") {
-        return Err(AppError::ConfigError(
-            "Devnet RPC detected! This bot is configured for mainnet only.".to_string()
-        ));
-    }
-    
-    // Validate profit threshold
-    if config.min_profit_threshold <= 0.0 {
-        return Err(AppError::ConfigError(
-            "Invalid profit threshold! Must be greater than 0.".to_string()
-        ));
-    }
-    
-    // Validate slippage
-    if config.max_slippage <= 0.0 || config.max_slippage > 100.0 {
-        return Err(AppError::ConfigError(
-            "Invalid slippage! Must be between 0 and 100.".to_string()
-        ));
-    }
+    // Execute the selected command
+    CommandExecutor::execute(cli.command, config).await?;
     
     Ok(())
 }

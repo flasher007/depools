@@ -44,7 +44,17 @@ impl ArbitrageEngine {
         // TODO: Implement actual arbitrage calculation
         let opportunity = ArbitrageOpportunity {
             id: utils::generate_id(),
-            route: ArbitrageRoute::new(utils::generate_id()),
+            route: ArbitrageRoute {
+                id: utils::generate_id(),
+                steps: vec![],
+                expected_profit: 0.0,
+                profit_percentage: 0.0,
+                total_cost: Amount::new(0, 9),
+                risk_score: 0.0,
+                timestamp: std::time::Instant::now(),
+                confidence_score: 0.0,
+                execution_time_estimate: std::time::Duration::from_millis(0),
+            },
             expected_profit: Amount::new(0, 9), // TODO: Calculate profit
             profit_percentage: 0.0, // TODO: Calculate percentage
             risk_score: 0.0, // TODO: Calculate risk
@@ -66,7 +76,24 @@ impl ArbitrageEngine {
         
         // TODO: Implement actual execution
         let result = ArbitrageResult {
-            opportunity: opportunity.clone(),
+            opportunity: ArbitrageOpportunity {
+                id: utils::generate_id(),
+                route: ArbitrageRoute {
+                    id: utils::generate_id(),
+                    steps: vec![],
+                    expected_profit: 0.0,
+                    profit_percentage: 0.0,
+                    total_cost: Amount::new(0, 9),
+                    risk_score: 0.0,
+                    timestamp: std::time::Instant::now(),
+                    confidence_score: 0.0,
+                    execution_time_estimate: std::time::Duration::from_millis(0),
+                },
+                expected_profit: Amount::new(0, 9),
+                profit_percentage: 0.0,
+                risk_score: 0.0,
+                timestamp: chrono::Utc::now(),
+            },
             executed: false,
             actual_profit: None,
             transaction_signature: None,
@@ -119,7 +146,17 @@ impl ArbitrageEngine {
         // Create opportunity
         let opportunity = ArbitrageOpportunity {
             id: utils::generate_id(),
-            route: ArbitrageRoute::new(utils::generate_id()),
+            route: ArbitrageRoute {
+                id: utils::generate_id(),
+                steps: vec![],
+                expected_profit: 0.0,
+                profit_percentage: 0.0,
+                total_cost: Amount::new(0, 9),
+                risk_score: 0.0,
+                timestamp: std::time::Instant::now(),
+                confidence_score: 0.0,
+                execution_time_estimate: std::time::Duration::from_millis(0),
+            },
             expected_profit: Amount::new(profit as u64, token_a.decimals),
             profit_percentage: (profit / optimal_amount.value as f64) * 100.0,
             risk_score: self.calculate_risk_score(&pool_1, &pool_2),

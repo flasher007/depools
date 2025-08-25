@@ -1,13 +1,13 @@
 //! Arbitrage domain - core arbitrage logic and strategies
 
-mod arbitrage_engine;
+pub mod arbitrage_engine;
 pub mod arbitrage_strategy;
-mod arbitrage_route;
-mod profit_calculator;
+pub mod opportunity_detector;
+pub mod profit_calculator;
 
 pub use arbitrage_engine::ArbitrageEngine;
-pub use arbitrage_strategy::{ArbitrageStrategy, StrategyType};
-pub use arbitrage_route::{ArbitrageRoute, RouteStep};
+pub use arbitrage_strategy::{ArbitrageStrategy, TwoHopStrategy};
+pub use opportunity_detector::{ArbitrageOpportunityDetector, ArbitrageRoute, ArbitrageStep, PriceData, ProfitCalculation};
 pub use profit_calculator::ProfitCalculator;
 
 use crate::shared::types::{Token, Amount, Price};

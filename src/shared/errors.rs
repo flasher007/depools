@@ -97,6 +97,9 @@ pub enum AppError {
     #[error("Blockchain error: {0}")]
     BlockchainError(String),
     
+    #[error("Execution error: {0}")]
+    ExecutionError(String),
+    
     #[error("Unknown error: {0}")]
     Unknown(String),
 }
