@@ -4,11 +4,12 @@ use solana_sdk::pubkey::Pubkey;
 use crate::shared::types::{Token, Amount};
 use crate::domain::dex::{PoolInfo, DexType};
 use crate::shared::errors::AppError;
-use super::{orca_structures::Whirlpool, RaydiumV4Pool, VaultReader};
+use super::{orca_structures::Whirlpool, dex_structures::RaydiumAMMPool, VaultReader};
 use super::vault_reader::TokenMetadata;
 use std::sync::Arc;
 
 /// Orca Whirlpool account parser
+#[derive(Clone)]
 pub struct OrcaAccountParser {
     vault_reader: Arc<VaultReader>,
 }
@@ -68,7 +69,7 @@ impl OrcaAccountParser {
     
     /// Parse Orca Whirlpool pool account (legacy method)
     pub async fn parse_pool_account(&self, account_data: &[u8]) -> Result<PoolInfo, AppError> {
-        println!("🔍 Debug: Account data length: {} bytes", account_data.len());
+
         
         // Try to deserialize as Whirlpool
         let whirlpool = Whirlpool::try_deserialize(account_data)
@@ -157,80 +158,80 @@ impl RaydiumAccountParser {
 }
 
 impl RaydiumAccountParser {
-    /// Parse Raydium V4 pool account with real vault balances
+    /// Parse Raydium AMM pool account with real vault balances
     pub async fn parse_pool_account_with_balances(
         &self,
         account_data: &[u8],
         vault_reader: &VaultReader,
     ) -> Result<PoolInfo, AppError> {
-        // Try to deserialize as RaydiumV4Pool
-        let raydium_pool = RaydiumV4Pool::try_deserialize(account_data)
-            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium V4 pool: {}", e)))?;
+        // Try to deserialize as RaydiumAMMPool
+        let raydium_pool = RaydiumAMMPool::try_deserialize(account_data)
+            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium AMM pool: {}", e)))?;
         
         // Get real vault balances
         let (balance_a, balance_b) = vault_reader
             .get_pool_vault_balances(
-                &raydium_pool.token_vault_a.to_string(),
-                &raydium_pool.token_vault_b.to_string(),
+                &raydium_pool.base_vault.to_string(),
+                &raydium_pool.quote_vault.to_string(),
             )
             .await?;
         
         // Get token metadata
-        let token_a_meta = vault_reader.get_token_metadata(&raydium_pool.token_mint_a.to_string()).await?;
-        let token_b_meta = vault_reader.get_token_metadata(&raydium_pool.token_mint_b.to_string()).await?;
+        let token_a_meta = vault_reader.get_token_metadata(&raydium_pool.base_mint.to_string()).await?;
+        let token_b_meta = vault_reader.get_token_metadata(&raydium_pool.quote_mint.to_string()).await?;
         
         // Create pool info from real data
         let pool_info = PoolInfo {
             id: "raydium_pool".to_string(), // Will be updated with actual pubkey
-            dex_type: DexType::RaydiumV4,
+            dex_type: DexType::RaydiumAMM,
             token_a: Token {
-                mint: raydium_pool.token_mint_a,
+                mint: raydium_pool.base_mint,
                 symbol: token_a_meta.symbol,
                 decimals: token_a_meta.decimals,
                 name: Some(token_a_meta.name),
             },
             token_b: Token {
-                mint: raydium_pool.token_mint_b,
+                mint: raydium_pool.quote_mint,
                 symbol: token_b_meta.symbol,
                 decimals: token_b_meta.decimals,
                 name: Some(token_b_meta.name),
             },
             reserve_a: Amount::new(balance_a, token_a_meta.decimals),
             reserve_b: Amount::new(balance_b, token_b_meta.decimals),
-            fee_rate: raydium_pool.get_fee_rate_percentage(),
-            liquidity: Amount::new(raydium_pool.liquidity as u64, 6),
+            fee_rate: raydium_pool.trade_fee_percentage(),
+            liquidity: Amount::new(raydium_pool.total_liquidity() as u64, 6),
             volume_24h: Amount::new(0, 6), // TODO: Calculate from recent transactions
         };
         
         Ok(pool_info)
     }
     
-    /// Parse Raydium V4 pool account (legacy method)
+    /// Parse Raydium AMM pool account (legacy method)
     pub fn parse_pool_account(&self, account_data: &[u8]) -> Result<PoolInfo, AppError> {
-        // Try to deserialize as RaydiumV4Pool
-        let raydium_pool = RaydiumV4Pool::try_deserialize(account_data)
-            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium V4 pool: {}", e)))?;
+        // Try to deserialize as RaydiumAMMPool
+        let raydium_pool = RaydiumAMMPool::try_deserialize(account_data)
+            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium AMM pool: {}", e)))?;
         
         // Create pool info from real data
         let pool_info = PoolInfo {
             id: "raydium_pool".to_string(), // Will be updated with actual pubkey
-            dex_type: DexType::RaydiumV4,
+            dex_type: DexType::RaydiumAMM,
             token_a: Token {
-                mint: raydium_pool.token_mint_a,
+                mint: raydium_pool.base_mint,
                 symbol: "TOKEN_A".to_string(), // TODO: Get from token metadata
-                decimals: 9, // TODO: Get from token metadata
+                decimals: raydium_pool.base_decimals as u8,
                 name: None,
             },
             token_b: Token {
-                mint: raydium_pool.token_mint_b,
+                mint: raydium_pool.quote_mint,
                 symbol: "TOKEN_B".to_string(), // TODO: Get from token metadata
-                decimals: 6, // TODO: Get from token metadata
+                decimals: raydium_pool.quote_decimals as u8,
                 name: None,
             },
             reserve_a: Amount::new(0, 0), // TODO: Get from vault balance
             reserve_b: Amount::new(0, 0), // TODO: Get from vault balance
-            fee_rate: raydium_pool.get_fee_rate_percentage(),
-            liquidity: Amount::new(raydium_pool.liquidity as u64, 6),
+            fee_rate: raydium_pool.trade_fee_percentage(),
+            liquidity: Amount::new(raydium_pool.total_liquidity() as u64, 6),
             volume_24h: Amount::new(0, 6), // TODO: Calculate from recent transactions
         };
         
@@ -239,7 +240,7 @@ impl RaydiumAccountParser {
     
     /// Check if account is a valid Raydium pool
     pub fn is_pool_account(&self, account_data: &[u8]) -> bool {
-        RaydiumV4Pool::try_deserialize(account_data).is_ok()
+        RaydiumAMMPool::try_deserialize(account_data).is_ok()
     }
 }
 

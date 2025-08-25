@@ -30,9 +30,9 @@ pub struct Whirlpool {
     pub tick_arrays: [Pubkey; 2],
 }
 
-/// Raydium V4 CLMM structure
+/// Raydium AMM structure (based on example bot)
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize)]
-pub struct RaydiumV4Pool {
+pub struct RaydiumAMMPool {
     pub status: u64,
     pub nonce: u64,
     pub order_num: u64,
@@ -193,15 +193,15 @@ impl Whirlpool {
     }
 }
 
-impl RaydiumV4Pool {
+impl RaydiumAMMPool {
     /// Try to deserialize from account data
     pub fn try_deserialize(data: &[u8]) -> Result<Self, AppError> {
         if data.len() < 752 {
-            return Err(AppError::BlockchainError("Invalid Raydium V4 pool account data length".to_string()));
+            return Err(AppError::BlockchainError("Invalid Raydium AMM account data length".to_string()));
         }
         
         BorshDeserialize::try_from_slice(data)
-            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium V4 pool: {}", e)))
+            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Raydium AMM: {}", e)))
     }
     
     /// Get trade fee as percentage
@@ -219,24 +219,9 @@ impl RaydiumV4Pool {
         }
         (self.swap_fee_numerator as f64 / self.swap_fee_denominator as f64) * 100.0
     }
-}
-
-impl MeteoraDLMM {
-    /// Try to deserialize from account data
-    pub fn try_deserialize(data: &[u8]) -> Result<Self, AppError> {
-        if data.len() < 752 {
-            return Err(AppError::BlockchainError("Invalid Meteora DLMM account data length".to_string()));
-        }
-        
-        BorshDeserialize::try_from_slice(data)
-            .map_err(|e| AppError::BlockchainError(format!("Failed to deserialize Meteora DLMM: {}", e)))
-    }
     
-    /// Get trade fee as percentage
-    pub fn trade_fee_percentage(&self) -> f64 {
-        if self.trade_fee_denominator == 0 {
-            return 0.0;
-        }
-        (self.trade_fee_numerator as f64 / self.trade_fee_denominator as f64) * 100.0
+    /// Get total liquidity
+    pub fn total_liquidity(&self) -> u128 {
+        self.pool_total_deposit_coin + self.pool_total_deposit_pc
     }
 }

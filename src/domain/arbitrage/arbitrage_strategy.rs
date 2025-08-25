@@ -160,7 +160,7 @@ mod tests {
             sol.clone(),
             usdc.clone(),
             DexType::OrcaWhirlpool,
-            DexType::RaydiumV4,
+            DexType::RaydiumAMM,
             0.001, // 0.1% min profit
         );
         
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(strategy.token_a.symbol, "SOL");
         assert_eq!(strategy.token_b.symbol, "USDC");
         assert_eq!(strategy.dex_1, DexType::OrcaWhirlpool);
-        assert_eq!(strategy.dex_2, DexType::RaydiumV4);
+        assert_eq!(strategy.dex_2, DexType::RaydiumAMM);
         assert_eq!(strategy.min_profit_threshold, 0.001);
     }
 
@@ -181,7 +181,7 @@ mod tests {
             sol.clone(),
             usdc.clone(),
             DexType::OrcaWhirlpool,
-            DexType::RaydiumV4,
+            DexType::RaydiumAMM,
             0.001,
         );
         assert!(valid_strategy.validate_route().is_ok());
@@ -204,7 +204,7 @@ mod tests {
             sol.clone(),
             usdc.clone(),
             DexType::OrcaWhirlpool,
-            DexType::RaydiumV4,
+            DexType::RaydiumAMM,
             0.001,
         );
         
@@ -222,7 +222,7 @@ mod tests {
             sol.clone(),
             usdc.clone(),
             DexType::OrcaWhirlpool,
-            DexType::RaydiumV4,
+            DexType::RaydiumAMM,
             0.001,
         );
         

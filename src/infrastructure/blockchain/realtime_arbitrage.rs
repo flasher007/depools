@@ -339,7 +339,7 @@ impl RealtimeArbitrageEngine {
         
         let raydium_pool = PoolInfo {
             id: "mock_raydium_pool".to_string(),
-            dex_type: DexType::RaydiumV4,
+            dex_type: DexType::RaydiumAMM,
             token_a: sol.clone(),
             token_b: usdc.clone(),
             reserve_a: Amount::new(1_000_000_000, 9),

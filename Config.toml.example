@@ -3,7 +3,8 @@
 # Using Helius RPC for enhanced performance and reliability
 
 [rpc]
-url = "https://api.mainnet-beta.solana.com"
+# Replace with your RPC endpoint (Helius, QuickNode, etc.)
+url = "YOUR_RPC_ENDPOINT_HERE"
 
 [wallet]
 keypair = "/path/to/your/keypair.json"

@@ -7,16 +7,10 @@ use crate::infrastructure::blockchain::{
     PoolDiscoveryService, 
     VaultReader, 
     RealProfitCalculator, 
-    RealtimePriceMonitor, 
-    AlertType, 
-    RealtimeArbitrageEngine, 
-    AutoExecutionConfig, 
-    OpportunityStatus, 
     RealTransactionExecutor,
     yellowstone_grpc::YellowstoneGrpcClient,
 };
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Signer;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
@@ -278,7 +272,7 @@ impl ArbitrageService {
         
         let pool_2 = PoolInfo {
             id: "raydium_pool_1".to_string(),
-            dex_type: DexType::RaydiumV4,
+            dex_type: DexType::RaydiumAMM,
             token_a: Token {
                 mint: Pubkey::new_unique(),
                 symbol: "SOL".to_string(),
@@ -335,7 +329,7 @@ impl ArbitrageService {
                 // Analyze opportunities across different DEX combinations
                 let dexes = DexRegistry::get_all_dexes()
                     .into_iter()
-                    .filter(|dex| dex.dex_type != DexType::Jupiter) // Skip Jupiter as it's an aggregator, not a DEX with pools
+                    .filter(|dex| dex.dex_type != DexType::RaydiumAMM) // Skip Raydium AMM for now as it's not working
                     .collect::<Vec<_>>();
                 
                 for i in 0..dexes.len() {
@@ -546,7 +540,7 @@ impl ArbitrageService {
                 name: Some("USD Coin".to_string()),
             },
             dex_1: DexType::OrcaWhirlpool,
-            dex_2: DexType::RaydiumV4,
+            dex_2: DexType::RaydiumAMM,
             amount_in: Amount::new((amount * 1_000_000_000.0) as u64, 9),
             amount_out: Amount::new((amount * 1_000_000_000.0) as u64, 9),
             profit_percentage: 0.5,
@@ -626,6 +620,95 @@ impl ArbitrageService {
         Ok(opportunities)
     }
     
+    /// Monitor prices and find arbitrage opportunities in real-time
+    pub async fn monitor_arbitrage_opportunities(&self, duration: u64, min_profit: f64) -> Result<(), AppError> {
+        println!("🔍 Starting arbitrage monitoring for {} seconds", duration);
+        println!("💰 Minimum profit threshold: {}%", min_profit);
+        
+        // Create pool discovery service
+        let pool_discovery = PoolDiscoveryService::new(self.config.network.rpc_url.clone());
+        
+        // Create profit calculator
+        let profit_calculator = RealProfitCalculator::new(self.config.network.rpc_url.clone());
+        
+        let start_time = std::time::Instant::now();
+        let mut round = 0;
+        
+        loop {
+            round += 1;
+            let elapsed = start_time.elapsed().as_secs();
+            
+            if elapsed >= duration {
+                println!("⏰ Monitoring completed after {} seconds", duration);
+                break;
+            }
+            
+            println!("\n🔄 Round {} ({}s remaining): Scanning for arbitrage...", round, duration - elapsed);
+            
+            // Discover current pools
+            let dexes = DexRegistry::get_all_dexes();
+            let mut all_pools: HashMap<DexType, Vec<PoolInfo>> = HashMap::new();
+            
+            for dex in dexes {
+                match pool_discovery.discover_dex_pools(dex.dex_type.clone()).await {
+                    Ok(pools) => {
+                        if !pools.is_empty() {
+                            all_pools.insert(dex.dex_type.clone(), pools);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Failed to discover {} pools: {}", dex.name, e);
+                    }
+                }
+            }
+            
+            if all_pools.len() < 2 {
+                println!("⚠️  Need at least 2 DEXes for arbitrage, found {}", all_pools.len());
+                sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+            
+            // Find arbitrage opportunities
+            match self.scan_arbitrage_opportunities(&all_pools, min_profit).await {
+                Ok(opportunities) => {
+                    if !opportunities.is_empty() {
+                        println!("💰 Found {} profitable opportunities!", opportunities.len());
+                        
+                        for (i, opp) in opportunities.iter().enumerate() {
+                            println!("  {}. {} -> {} via {} -> {} (Profit: {:.2}%)", 
+                                i + 1,
+                                opp.token_a.symbol,
+                                opp.token_b.symbol,
+                                opp.dex_1.as_str(),
+                                opp.dex_2.as_str(),
+                                opp.profit_percentage
+                            );
+                        }
+                        
+                        // Execute best opportunity
+                        if let Some(best_opp) = opportunities.first() {
+                            println!("🚀 Executing best opportunity: {:.2}% profit", best_opp.profit_percentage);
+                            if let Err(e) = self.execute_arbitrage_opportunity(best_opp, self.config.max_slippage).await {
+                                eprintln!("❌ Failed to execute arbitrage: {}", e);
+                            }
+                        }
+                    } else {
+                        println!("😴 No profitable opportunities found (threshold: {}%)", min_profit);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Error scanning for opportunities: {}", e);
+                }
+            }
+            
+            // Wait before next round
+            sleep(Duration::from_secs(10)).await;
+        }
+        
+        println!("✅ Arbitrage monitoring completed successfully");
+        Ok(())
+    }
+    
     async fn execute_arbitrage_opportunity(&self, opportunity: &ArbitrageOpportunity, max_slippage: f64) -> Result<(), AppError> {
         println!("🚀 Executing arbitrage opportunity: {}", opportunity.id);
         println!("💰 Profit: {:.2}%", opportunity.profit_percentage);
@@ -674,7 +757,7 @@ impl ArbitrageService {
                         name: Some("USD Coin".to_string()),
                     },
                     dex_1: DexType::OrcaWhirlpool,
-                    dex_2: DexType::RaydiumV4,
+                    dex_2: DexType::RaydiumAMM,
                     amount_in: Amount::new(1_000_000_000, 9), // 1 SOL
                     amount_out: Amount::new(1_000_000_000, 9), // 1 SOL
                     profit_percentage: 0.1 + (i as f64 * 0.05), // 0.1% to 0.35%

@@ -22,16 +22,6 @@ impl RealProfitCalculator {
     
 
     
-    /// Create with default mainnet RPC
-    pub fn new_mainnet() -> Self {
-        Self::new("https://api.mainnet-beta.solana.com".to_string())
-    }
-    
-    /// Create with devnet RPC
-    pub fn new_devnet() -> Self {
-        Self::new("https://api.devnet.solana.com".to_string())
-    }
-    
     /// Calculate real profit for TwoHop arbitrage
     pub async fn calculate_two_hop_profit(
         &self,
@@ -149,13 +139,13 @@ impl RealProfitCalculator {
         // Add DEX-specific costs
         match dex_1 {
             DexType::OrcaWhirlpool => total_cost += 50_000,
-            DexType::RaydiumV4 => total_cost += 40_000,
+            DexType::RaydiumAMM => total_cost += 40_000,
             _ => total_cost += 60_000,
         }
         
         match dex_2 {
             DexType::OrcaWhirlpool => total_cost += 50_000,
-            DexType::RaydiumV4 => total_cost += 40_000,
+            DexType::RaydiumAMM => total_cost += 40_000,
             _ => total_cost += 60_000,
         }
         

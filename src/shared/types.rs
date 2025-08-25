@@ -98,7 +98,7 @@ impl Default for BotConfig {
     fn default() -> Self {
         Self {
             network: NetworkConfig {
-                rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
+                rpc_url: "".to_string(), // Will be set from config file
                 ws_url: None,
                 commitment: "confirmed".to_string(),
                 timeout_ms: 30000,

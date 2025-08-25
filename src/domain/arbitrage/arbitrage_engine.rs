@@ -24,7 +24,7 @@ impl ArbitrageEngine {
             max_slippage,
             active: false,
             dex_registry: DexRegistry,
-            pool_discovery: PoolDiscoveryService::new_mainnet(),
+            pool_discovery: PoolDiscoveryService::new("".to_string()), // Will be set from config
         }
     }
     

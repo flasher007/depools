@@ -178,7 +178,7 @@ impl RealTransactionExecutor {
             DexType::OrcaWhirlpool => {
                 self.build_orca_swap_instruction(pool, token_in, token_out, amount_in, is_first_swap)
             }
-            DexType::RaydiumV4 => {
+            DexType::RaydiumAMM => {
                 self.build_raydium_swap_instruction(pool, token_in, token_out, amount_in, is_first_swap)
             }
             _ => Err(AppError::BlockchainError("Unsupported DEX type".to_string())),

@@ -19,18 +19,6 @@ impl SolanaRpcClient {
         }
     }
     
-
-    
-    /// Create default client (mainnet)
-    pub fn new_mainnet() -> Self {
-        Self::new("https://api.mainnet-beta.solana.com".to_string())
-    }
-    
-    /// Create devnet client
-    pub fn new_devnet() -> Self {
-        Self::new("https://api.devnet.solana.com".to_string())
-    }
-    
     /// Get all accounts owned by a program
     pub async fn get_program_accounts(&self, program_id: &str) -> Result<Vec<(Pubkey, Vec<u8>)>, AppError> {
         let pubkey = Pubkey::from_str(program_id)

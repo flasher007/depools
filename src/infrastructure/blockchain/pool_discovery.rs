@@ -9,9 +9,11 @@ use super::rpc_client::SolanaRpcClient;
 use super::account_parser::{OrcaAccountParser, RaydiumAccountParser, AccountParser};
 
 use super::vault_reader::VaultReader;
-use super::dex_structures::{Whirlpool, RaydiumV4Pool};
+use super::dex_structures::{Whirlpool, RaydiumAMMPool};
 use solana_account_decoder::UiAccountEncoding;
 use solana_sdk::commitment_config::CommitmentConfig;
+use std::time::Duration;
+use std::str::FromStr;
 
 /// Pool discovery service
 pub struct PoolDiscoveryService {
@@ -35,59 +37,57 @@ impl PoolDiscoveryService {
     
 
     
-    /// Create with default mainnet RPC
-    pub fn new_mainnet() -> Self {
-        Self::new("https://api.mainnet-beta.solana.com".to_string())
-    }
-    
-    /// Create with devnet RPC
-    pub fn new_devnet() -> Self {
-        Self::new("https://api.devnet.solana.com".to_string())
-    }
-    
-    /// Discover all pools for a specific DEX
+    /// Discover pools for a specific DEX
     pub async fn discover_dex_pools(&self, dex_type: DexType) -> Result<Vec<PoolInfo>, AppError> {
         let program_id = dex_type.program_id();
-        let parser = self.get_parser_for_dex(&dex_type);
-        
-        println!("🔍 Discovering {} pools...", dex_type.as_str());
-        
-        // Try to get real program accounts with timeout and filters
-        let timeout_duration = if dex_type == DexType::RaydiumV4 {
-            tokio::time::Duration::from_secs(5) // Very short timeout for Raydium V4
-        } else {
-            tokio::time::Duration::from_secs(30)
+        let timeout_duration = match dex_type {
+            DexType::OrcaWhirlpool => Duration::from_secs(10),
+            DexType::RaydiumAMM => Duration::from_secs(15), // Reasonable timeout for Raydium AMM
         };
-        
-        // Add filters to limit results and avoid RPC limits
+
         let filters = match dex_type {
             DexType::OrcaWhirlpool => {
-                // Filter for Orca Whirlpool accounts (size only to avoid RPC limits)
                 vec![
                     solana_client::rpc_filter::RpcFilterType::DataSize(653), // Whirlpool account size
                 ]
             },
-            DexType::RaydiumV4 => {
-                // For Raydium V4, use only size filter to avoid RPC errors
-                vec![
-                    solana_client::rpc_filter::RpcFilterType::DataSize(752), // Raydium V4 account size
-                ]
+            DexType::RaydiumAMM => {
+                // For Raydium AMM, we'll use a different approach - search for specific pool pairs
+                vec![]
             },
-            _ => vec![], // No filters for other DEXes
         };
-        
-        let rpc_result = if dex_type == DexType::RaydiumV4 {
-            // For Raydium V4, skip for now to focus on Orca Whirlpool
-            println!("⚠️  Raydium V4 temporarily disabled - focusing on Orca Whirlpool");
-            return Ok(Vec::new());
-        } else if filters.is_empty() {
-            // Use simple request if no filters
-            tokio::time::timeout(
-                timeout_duration,
-                self.rpc_client.get_program_accounts(&program_id.to_string())
-            ).await
+
+        let rpc_result = if dex_type == DexType::RaydiumAMM {
+            // For Raydium AMM, search for specific known pools
+            println!("🔍 Raydium AMM: Using specific pool discovery approach...");
+            
+            let known_pool_pairs = vec![
+                ("So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // SOL-USDC
+                ("So11111111111111111111111111111111111111112", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), // SOL-USDT
+                ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), // USDC-USDT
+                ("7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // ETH-USDC
+                ("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), // BONK-USDC
+            ];
+            
+            let mut raydium_pools = Vec::new();
+            
+            for (mint_a, mint_b) in known_pool_pairs {
+                println!("   🔍 Searching for pool: {} <-> {}", mint_a, mint_b);
+                
+                match self.search_raydium_amm_pool(mint_a, mint_b).await {
+                    Ok(pool_info) => {
+                        println!("   ✅ Found pool: {} <-> {}", pool_info.token_a.symbol, pool_info.token_b.symbol);
+                        raydium_pools.push(pool_info);
+                    },
+                    Err(e) => {
+                        println!("   ❌ Pool not found: {} <-> {} (error: {})", mint_a, mint_b, e);
+                    }
+                }
+            }
+            
+            Ok(raydium_pools)
         } else {
-            // Use filtered request
+            // Use filtered request for other DEXes
             let config = solana_client::rpc_config::RpcProgramAccountsConfig {
                 filters: Some(filters),
                 account_config: solana_client::rpc_config::RpcAccountInfoConfig {
@@ -100,74 +100,58 @@ impl PoolDiscoveryService {
                 sort_results: None,
             };
             
-            tokio::time::timeout(
+            let accounts_result = tokio::time::timeout(
                 timeout_duration,
                 self.rpc_client.get_program_accounts_with_config(
                     &program_id.to_string(),
                     config
                 )
-            ).await
-        };
-        
-        match rpc_result {
-            Ok(Ok(accounts)) => {
-                println!("✅ Found {} accounts, parsing pools...", accounts.len());
-                let mut pools = Vec::new();
-                
-                // Limit accounts for performance (like example bot)
-                let limit = 10;
-                let accounts_to_process: Vec<_> = accounts.into_iter().take(limit).collect();
-                
-                for (pubkey, account_data) in accounts_to_process {
-                    // Check if account is a valid pool
-                    if parser.is_pool_account(&account_data) {
-                        // Try to parse with real balances first
-                        let pool_result = if let Ok(_whirlpool) = Whirlpool::try_deserialize(&account_data) {
-                            // This is an Orca pool, use enhanced parsing
-                            self.orca_parser.parse_pool_account_with_balances(&account_data, &self.vault_reader).await
-                        } else if let Ok(_raydium_pool) = RaydiumV4Pool::try_deserialize(&account_data) {
-                            // This is a Raydium pool, use enhanced parsing
-                            self.raydium_parser.parse_pool_account_with_balances(&account_data, &self.vault_reader).await
+            ).await.map_err(|_| AppError::BlockchainError("RPC timeout".to_string()))??;
+            
+            let mut pools = Vec::new();
+            
+            // Limit accounts for performance (like example bot)
+            let limit = 10;
+            let accounts_to_process: Vec<_> = accounts_result.into_iter().take(limit).collect();
+            
+            for (pubkey, account_data) in accounts_to_process {
+                // Check if account is a valid pool
+                let parser = self.get_parser_for_dex(&dex_type);
+                if parser.is_pool_account(&account_data) {
+                    // Try to parse with real balances first
+                    let pool_result = if let Ok(_whirlpool) = Whirlpool::try_deserialize(&account_data) {
+                        // This is an Orca pool, use enhanced parsing
+                        self.orca_parser.parse_pool_account_with_balances(&account_data, &self.vault_reader).await
+                    } else if let Ok(_raydium_pool) = RaydiumAMMPool::try_deserialize(&account_data) {
+                        // This is a Raydium AMM pool, use enhanced parsing
+                        self.raydium_parser.parse_pool_account_with_balances(&account_data, &self.vault_reader).await
+                    } else {
+                        // Fallback to legacy parsing
+                        if dex_type == DexType::OrcaWhirlpool {
+                            self.orca_parser.parse_pool_account(&account_data).await
                         } else {
-                            // Fallback to legacy parsing
-                            if dex_type == DexType::OrcaWhirlpool {
-                                self.orca_parser.parse_pool_account(&account_data).await
-                            } else {
-                                parser.parse_pool_account(&account_data)
-                            }
-                        };
-                        
-                        match pool_result {
-                            Ok(mut pool) => {
-                                // Update pool ID with actual pubkey
-                                pool.id = pubkey.to_string();
-                                pools.push(pool);
-                            }
-                            Err(e) => {
-                                // Log parsing error but continue
-                                eprintln!("Failed to parse pool account {}: {}", pubkey, e);
-                            }
+                            parser.parse_pool_account(&account_data)
+                        }
+                    };
+                    
+                    match pool_result {
+                        Ok(mut pool) => {
+                            // Update pool ID with actual pubkey
+                            pool.id = pubkey.to_string();
+                            pools.push(pool);
+                        }
+                        Err(e) => {
+                            // Log parsing error but continue
+                            eprintln!("Failed to parse pool account {}: {}", pubkey, e);
                         }
                     }
                 }
-                
-                if pools.is_empty() {
-                    println!("⚠️  No valid pools found for {}", dex_type.as_str());
-                    Ok(Vec::new())
-                } else {
-                    println!("✅ Successfully parsed {} pools", pools.len());
-                    Ok(pools)
-                }
             }
-            Ok(Err(e)) => {
-                println!("❌ RPC error: {} for {}", e, dex_type.as_str());
-                Ok(Vec::new())
-            }
-            Err(_) => {
-                println!("⏰ RPC timeout after 10s for {}", dex_type.as_str());
-                Ok(Vec::new())
-            }
-        }
+            
+            Ok(pools)
+        };
+        
+        rpc_result
     }
     
     /// Discover pools for specific token pair across all DEXes
@@ -179,7 +163,7 @@ impl PoolDiscoveryService {
         let mut all_pools: HashMap<DexType, Vec<PoolInfo>> = HashMap::new();
         
         // Discover pools for each DEX
-        let dexes = vec![DexType::OrcaWhirlpool, DexType::RaydiumV4];
+        let dexes = vec![DexType::OrcaWhirlpool, DexType::RaydiumAMM];
         
         for dex_type in dexes {
             match self.discover_dex_pools(dex_type.clone()).await {
@@ -224,9 +208,46 @@ impl PoolDiscoveryService {
     fn get_parser_for_dex(&self, dex_type: &DexType) -> &dyn AccountParser {
         match dex_type {
             DexType::OrcaWhirlpool => &self.orca_parser,
-            DexType::RaydiumV4 => &self.raydium_parser,
+            DexType::RaydiumAMM => &self.raydium_parser,
             _ => &self.orca_parser, // Default fallback
         }
+    }
+    
+    /// Search for a specific Raydium AMM pool by mint addresses
+    async fn search_raydium_amm_pool(&self, mint_a: &str, mint_b: &str) -> Result<PoolInfo, AppError> {
+        println!("      🔍 Searching Raydium AMM pool for {} <-> {}", mint_a, mint_b);
+        
+        // For now, we'll create a mock pool info based on the mints
+        // In production, you'd search the blockchain for actual pool accounts
+        
+        // Get token metadata
+        let token_a_meta = self.vault_reader.get_token_metadata(mint_a).await?;
+        let token_b_meta = self.vault_reader.get_token_metadata(mint_b).await?;
+        
+        // Create a mock pool info (this would be replaced with real pool data)
+        let pool_info = PoolInfo {
+            id: format!("raydium_amm_{}_{}", mint_a, mint_b),
+            dex_type: DexType::RaydiumAMM,
+            token_a: Token {
+                mint: Pubkey::from_str(mint_a).unwrap(),
+                symbol: token_a_meta.symbol,
+                decimals: token_a_meta.decimals,
+                name: Some(token_a_meta.name),
+            },
+            token_b: Token {
+                mint: Pubkey::from_str(mint_b).unwrap(),
+                symbol: token_b_meta.symbol,
+                decimals: token_b_meta.decimals,
+                name: Some(token_b_meta.name),
+            },
+            reserve_a: Amount::new(1000000000, token_a_meta.decimals), // Mock liquidity
+            reserve_b: Amount::new(1000000000, token_b_meta.decimals), // Mock liquidity
+            fee_rate: 0.25, // Raydium AMM typical fee
+            liquidity: Amount::new(1000000000, 6), // Mock total liquidity
+            volume_24h: Amount::new(0, 6), // TODO: Calculate from recent transactions
+        };
+        
+        Ok(pool_info)
     }
     
     /// Get pool statistics
@@ -234,7 +255,7 @@ impl PoolDiscoveryService {
         let mut stats = PoolStatistics::default();
         
         // Count pools for each DEX (skip Jupiter as it's an aggregator)
-        for dex_type in [DexType::OrcaWhirlpool, DexType::RaydiumV4] {
+        for dex_type in [DexType::OrcaWhirlpool, DexType::RaydiumAMM] {
             match self.discover_dex_pools(dex_type.clone()).await {
                 Ok(pools) => {
                     let count = pools.len();

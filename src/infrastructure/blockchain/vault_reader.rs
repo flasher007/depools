@@ -30,17 +30,7 @@ impl VaultReader {
     
     /// Create new vault reader with default mainnet RPC
     pub fn new_default() -> Self {
-        Self::new_mainnet()
-    }
-    
-    /// Create with default mainnet RPC
-    pub fn new_mainnet() -> Self {
-        Self::new("https://api.mainnet-beta.solana.com".to_string())
-    }
-    
-    /// Create with devnet RPC
-    pub fn new_devnet() -> Self {
-        Self::new("https://api.devnet.solana.com".to_string())
+        Self::new("".to_string()) // Will be set from config
     }
     
     /// Get token account balance
